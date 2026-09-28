@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BrainRoom</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@latest/dist/galmuri.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="topbar" class="topbar" hidden>
+    <div class="brand" data-go="meeting" title="회의실로">🧠 BrainRoom <span id="teamName"></span></div>
+    <nav id="nav">
+      <button data-go="meeting">🗂️ 회의실</button>
+      <button data-go="room">🚪 내 방</button>
+      <button data-go="office">🏢 전체 보기</button>
+    </nav>
+    <div class="me">
+      <label id="meSwitch">나 <select id="meSelect" title="현재 사용자 (데모용 전환)"></select></label>
+      <div id="userChip" class="user-chip" hidden></div>
+      <button id="menuBtn" class="btn icon" title="워크스페이스 설정">⚙️</button>
+    </div>
+  </header>
+
+  <main id="app"></main>
+  <aside id="panel" class="panel"></aside>
+  <div id="modal" class="modal" hidden></div>
+  <div id="toasts"></div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="js/firebase-config.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/themes.js"></script>
+  <script src="js/nlp.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/iso.js"></script>
+  <script src="js/room.js"></script>
+  <script src="js/hall.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
