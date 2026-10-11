@@ -87,6 +87,7 @@ function itemCardHTML(item, { owner = false } = {}) {
 
 function renderSetup() {
   $('#topbar').hidden = true;
+  const local = authActive() ? loadState() : null;
   app.innerHTML = `
   <section class="setup">
     <div class="setup-card">
@@ -100,7 +101,8 @@ function renderSetup() {
         <button class="btn primary" type="submit">오피스 만들기</button>
       </form>
       <div class="or">또는</div>
-      <button class="btn" id="sampleBtn">🎲 샘플 팀으로 체험하기</button>
+      <button class="btn" id="sampleBtn">🎲 샘플 팀으로 시작하기</button>
+      ${local ? `<button class="btn" id="migrateBtn">💾 이 브라우저에 있던 「${esc(local.teamName)}」 올리기</button>` : ''}
       <label class="btn ghost file-btn">📂 워크스페이스 파일 불러오기<input type="file" accept=".json" id="importFile" hidden></label>
     </div>
   </section>`;
@@ -126,6 +128,8 @@ function renderLogin() {
       ${fileMode
         ? '<p class="notice">⚠️ 파일을 직접 열면 Google 로그인이 동작하지 않아요.<br>로컬 서버(<code>python -m http.server 5173</code>)로 실행해 주세요.</p>'
         : '<p class="muted sm">로그인하면 내 계정이 팀원의 방과 연결돼요.</p>'}
+      <div class="or">또는</div>
+      <button class="btn" id="guestSampleBtn">🎲 로그인 없이 샘플 팀으로 체험하기</button>
     </div>
   </section>`;
 }
@@ -492,7 +496,13 @@ function closeModal() {
 function openMenu() {
   openModal(`
     <h2>⚙️ 워크스페이스</h2>
-    <p class="muted">지금은 이 브라우저에만 저장돼요. 파일로 내보내 팀원과 주고받을 수 있어요.</p>
+    ${cloudOn() ? `
+    <p class="muted">☁️ 클라우드에 저장되고 팀원과 실시간으로 공유돼요. 아래 링크로 팀원을 초대하세요.</p>
+    <div class="inline-form">
+      <input id="inviteLink" readonly value="${esc(inviteLink())}">
+      <button class="btn" id="copyInvite">초대 링크 복사</button>
+    </div>` : '<p class="muted">지금은 이 브라우저에만 저장돼요. 파일로 내보내 팀원과 주고받을 수 있어요.</p>'}
+    ${guestMode ? '<p class="muted sm">🎲 샘플 팀 체험 중이에요. 여기서 바꾼 내용은 저장되지 않아요.</p>' : ''}
     ${AUTH_ENABLED ? '' : '<p class="muted sm">🔓 로그인 없는 데모 모드로 실행 중이에요. <code>js/firebase-config.js</code>를 채우면 Google 로그인이 켜져요.</p>'}
     <form id="memberForm" class="inline-form">
       <input name="name" required maxlength="20" placeholder="새 팀원 이름">
@@ -501,14 +511,27 @@ function openMenu() {
     <div class="menu-list">
       <button class="btn" id="exportWs">💾 워크스페이스 파일로 내보내기</button>
       <label class="btn file-btn">📂 워크스페이스 파일 불러오기<input type="file" accept=".json" id="importFile" hidden></label>
-      <button class="btn danger" id="resetWs">🗑️ 초기화 (처음부터)</button>
+      ${cloudOn()
+        ? '<button class="btn danger" id="resetWs">🚪 이 워크스페이스에서 나가기</button>'
+        : '<button class="btn danger" id="resetWs">🗑️ 초기화 (처음부터)</button>'}
     </div>
     <div class="modal-actions"><button class="btn ghost" data-close>닫기</button></div>`);
   $('#exportWs').onclick = () => download(`brainroom_${state.teamName}.json`, JSON.stringify(state, null, 2), 'application/json');
+  if (cloudOn()) {
+    $('#copyInvite').onclick = async () => {
+      try { await navigator.clipboard.writeText(inviteLink()); } catch { $('#inviteLink').select(); document.execCommand('copy'); }
+      toast('초대 링크를 복사했어요');
+    };
+  }
   $('#resetWs').onclick = () => {
+    if (cloudOn()) {
+      if (!confirm('이 계정에서 워크스페이스 연결을 끊을까요? 팀원들의 데이터는 그대로 남고, 초대 링크로 다시 들어올 수 있어요.')) return;
+      closeModal();
+      return leaveCloudWorkspace();
+    }
     if (!confirm('모든 자료가 지워집니다. 초기화할까요?')) return;
     state = null;
-    try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* 무시 */ }
+    if (!guestMode) try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* 무시 */ }
     closeModal();
     render();
   };
@@ -521,11 +544,11 @@ function importWorkspace(file) {
       const data = JSON.parse(reader.result);
       if (!Array.isArray(data.members) || !Array.isArray(data.items)) throw new Error('형식 오류');
       data.items.forEach(analyze);
+      if (cloudOn() && !confirm('파일 내용으로 새 클라우드 워크스페이스를 만들까요? (지금 워크스페이스는 그대로 남아요)')) return;
       state = { ...data, view: 'meeting', roomId: null };
       if (!member(state.meId)) state.meId = state.members[0]?.id;
-      saveState();
       closeModal();
-      render();
+      commitNewWorkspace();
       toast('워크스페이스를 불러왔어요');
     } catch (e) {
       toast('불러올 수 없는 파일이에요');
@@ -545,9 +568,12 @@ function renderTopbar() {
     b.classList.toggle('active', active);
     if (b.dataset.go === 'room') b.dataset.member = state.meId;
   });
-  $('#meSwitch').hidden = AUTH_ENABLED;
-  $('#userChip').hidden = !AUTH_ENABLED;
-  if (AUTH_ENABLED) {
+  $('#meSwitch').hidden = authActive();
+  $('#userChip').hidden = !authActive() && !guestMode;
+  if (guestMode) {
+    $('#userChip').innerHTML = '<button class="btn ghost sm" id="exitGuestBtn">체험 끝내고 로그인</button>';
+  }
+  if (authActive()) {
     const me = member(state.meId);
     $('#userChip').innerHTML = `
       ${authUser.photo ? `<img src="${esc(authUser.photo)}" alt="" referrerpolicy="no-referrer">` : `<i class="dot" style="--mc:${me.color}"></i>`}
@@ -564,9 +590,14 @@ function render() {
     app.innerHTML = '<div class="loading">불러오는 중…</div>';
     return;
   }
-  if (AUTH_ENABLED && !authUser) return renderLogin();
+  if (authActive() && !authUser) return renderLogin();
+  if (authActive() && cloudLoading) {
+    $('#topbar').hidden = true;
+    app.innerHTML = '<div class="loading">워크스페이스를 불러오는 중…</div>';
+    return;
+  }
   if (!state) return renderSetup();
-  if (AUTH_ENABLED) {
+  if (authActive()) {
     const mine = memberByUid(authUser.uid);
     if (!mine) return renderClaim();
     if (state.meId !== mine.id) { state.meId = mine.id; saveState(); }
@@ -576,6 +607,36 @@ function render() {
   else if (state.view === 'office') renderOffice();
   else renderMeeting();
   if (panelSpec) renderPanel();
+}
+
+// 새로 만든 워크스페이스 저장: 로그인 모드는 Firestore에 올리고, 데모 모드는 이 브라우저에 저장
+function commitNewWorkspace() {
+  if (authActive()) return cloudCreateWorkspace(state);
+  saveState();
+  render();
+}
+
+// 팀원의 변경이 도착했을 때 다시 그리기. 입력 중이거나 카드를 끄는 중이면 끝난 뒤로 미룬다
+let renderPending = false;
+function scheduleRender() {
+  const el = document.activeElement;
+  if (dragging || (el && el.matches('input, textarea, select') && !el.closest('#modal'))) {
+    renderPending = true;
+    return;
+  }
+  renderPending = false;
+  render();
+}
+document.addEventListener('focusout', () => {
+  if (renderPending) setTimeout(() => { if (renderPending) scheduleRender(); });
+});
+
+function onAuthChange() {
+  if (authActive()) {
+    if (authUser && cloud?.uid !== authUser.uid) return startCloud(authUser);
+    if (!authUser && cloud) { stopCloud(); state = null; }
+  }
+  render();
 }
 
 // ---------- 이벤트 ----------
@@ -602,10 +663,31 @@ document.addEventListener('click', e => {
     return go('meeting');
   }
 
-  if (t.closest('#sampleBtn')) {
+  if (t.closest('#guestSampleBtn')) {
+    guestMode = true;
     state = sampleWorkspace();
     render();
+    toast('샘플 팀 "캡스톤 3조"로 체험 중이에요 (저장되지 않아요)');
+    return;
+  }
+  if (t.closest('#exitGuestBtn')) {
+    guestMode = false;
+    closePanel();
+    state = authActive() ? null : loadState();
+    return render();
+  }
+
+  if (t.closest('#sampleBtn')) {
+    state = sampleWorkspace();
+    commitNewWorkspace();
     toast('샘플 팀 "캡스톤 3조"를 불러왔어요');
+    return;
+  }
+  if (t.closest('#migrateBtn')) {
+    state = loadState();
+    state.items.forEach(analyze);
+    commitNewWorkspace();
+    toast(`「${state.teamName}」을(를) 클라우드에 올렸어요`);
     return;
   }
 
@@ -655,8 +737,7 @@ document.addEventListener('submit', e => {
     if (!names.length) return;
     state = newWorkspace(data.get('team').trim(), [...new Set(names)]);
     if (authUser) claimMember(state.members[0].id, authUser);
-    saveState();
-    render();
+    commitNewWorkspace();
   } else if (form.id === 'addForm') {
     handleAdd(form);
   } else if (form.id === 'memberForm') {
@@ -737,10 +818,11 @@ document.addEventListener('pointerup', () => {
   itemById(card.dataset.id).table = { x: parseFloat(card.style.left), y: parseFloat(card.style.top) };
   saveState();
   dragging = null;
+  if (renderPending) scheduleRender();
 });
 
 window.addEventListener('resize', () => { if (state?.view === 'meeting') drawLinks(); });
 
-state = loadState();
+state = AUTH_ENABLED ? null : loadState();
 render();
-initAuth(render);
+initAuth(onAuthChange);

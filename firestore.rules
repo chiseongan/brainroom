@@ -1,0 +1,51 @@
+rules_version = '2';
+
+// BrainRoom Firestore 보안 규칙
+// Firebase 콘솔 → Firestore Database → 규칙 탭에 그대로 붙여넣고 [게시]를 누르세요.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMemberOf(wsId) {
+      return signedIn()
+        && request.auth.uid in get(/databases/$(database)/documents/workspaces/$(wsId)).data.uids;
+    }
+
+    // 내 계정이 어느 워크스페이스에 연결돼 있는지 (본인만)
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /workspaces/{wsId} {
+      // 만들 때는 나 혼자만 멤버
+      allow create: if signedIn()
+        && request.resource.data.uids == [request.auth.uid]
+        && request.resource.data.createdBy == request.auth.uid;
+
+      allow read: if signedIn() && request.auth.uid in resource.data.uids;
+
+      // 팀원은 수정 가능 (다른 팀원을 빼는 것은 불가),
+      // 팀원이 아니면 초대 링크로 '나 자신'을 추가하는 것만 가능
+      allow update: if signedIn() && request.resource.data.createdBy == resource.data.createdBy && (
+        (request.auth.uid in resource.data.uids
+          && request.resource.data.uids.hasAll(resource.data.uids))
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uids'])
+          && request.resource.data.uids.hasAll(resource.data.uids)
+          && request.resource.data.uids.size() == resource.data.uids.size() + 1
+          && request.auth.uid in request.resource.data.uids)
+      );
+
+      allow delete: if false;
+
+      match /members/{memberId} {
+        allow read, write: if isMemberOf(wsId);
+      }
+      match /items/{itemId} {
+        allow read, write: if isMemberOf(wsId);
+      }
+    }
+  }
+}

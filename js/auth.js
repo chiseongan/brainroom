@@ -4,6 +4,12 @@
 const AUTH_ENABLED = Boolean(FIREBASE_CONFIG.apiKey) && typeof firebase !== 'undefined';
 let authUser = null; // { uid, name, email, photo }
 let authReady = false;
+let guestMode = false; // 로그인 없이 샘플 팀 체험 중 (저장하지 않음)
+
+// 로그인이 필요한 상태인지 (Firebase 설정이 있고 체험 모드가 아닐 때)
+function authActive() {
+  return AUTH_ENABLED && !guestMode;
+}
 
 if (FIREBASE_CONFIG.apiKey && typeof firebase === 'undefined') {
   console.warn('Firebase SDK를 불러오지 못해 데모 모드로 실행합니다. (인터넷 연결 확인)');

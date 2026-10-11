@@ -1,4 +1,4 @@
-// 워크스페이스 상태 + localStorage 저장. (백엔드 붙이기 전까지는 JSON 내보내기/불러오기로 팀원과 공유)
+// 워크스페이스 상태 + 저장. 로그인 모드는 Firestore(js/cloud.js), 데모 모드는 이 브라우저의 localStorage.
 
 const STORAGE_KEY = 'brainroom:v1';
 const MEMBER_COLORS = ['#6366f1', '#f97316', '#10b981', '#ec4899', '#0ea5e9', '#eab308', '#8b5cf6', '#14b8a6'];
@@ -23,6 +23,8 @@ function loadState() {
 }
 
 function saveState() {
+  if (guestMode) return; // 체험 데이터는 실제 워크스페이스를 덮어쓰지 않음
+  if (authActive()) return cloudSave();
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* 무시 */ }
 }
 
