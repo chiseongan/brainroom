@@ -38,7 +38,13 @@ function timeAgo(ts) {
   return `${Math.floor(min / 1440)}일 전`;
 }
 
+const STUDENT_VIEWS = ['meeting', 'room', 'office', 'timeline', 'decisions', 'report'];
+
 function go(view, roomId = null) {
+  if (isProfView() && STUDENT_VIEWS.includes(view)) {
+    logAccess(view);
+    return toast('교수자 보기에서는 학생 전용 화면에 들어갈 수 없어요');
+  }
   state.view = view;
   state.roomId = roomId;
   saveState();
@@ -67,9 +73,22 @@ function itemCardHTML(item, { owner = false } = {}) {
       <span class="ic-type" title="${meta.label}">${meta.icon}</span>
       <b>${esc(item.title)}</b>
       ${owner ? `<span class="ic-owner">${esc(m.name)}</span>` : ''}
+      ${mine
+        ? `<select class="vis-select" title="공유 범위" aria-label="공유 범위">${Object.entries(VISIBILITY).map(([k, v]) =>
+            `<option value="${k}" ${item.visibility === k ? 'selected' : ''}>${v.icon} ${v.label}</option>`).join('')}</select>`
+        : visBadge(item)}
     </header>
     ${item.content ? `<p>${esc(item.content)}</p>` : ''}
     ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">🔗 ${esc(host)}</a>` : ''}
+    ${item.type === 'ai' && item.ai ? `
+      <div class="ai-meta">
+        ${mine
+          ? `<label class="sm">사용 목적 <select class="purpose-select">${AI_PURPOSES.map(p =>
+              `<option value="${p.id}" ${item.ai.purpose === p.id ? 'selected' : ''}>${p.emoji} ${p.label}</option>`).join('')}</select></label>
+             <span class="chip ghost">${esc(item.ai.tool)}</span>`
+          : purposeChip(item)}
+      </div>
+      ${item.ai.transcript ? `<details class="transcript"><summary>원문 보기</summary><pre>${esc(item.ai.transcript)}</pre></details>` : ''}` : ''}
     <div class="chips">
       ${item.themes.map(t => `<span class="chip">${THEME_BY_ID[t].emoji} ${THEME_BY_ID[t].name}</span>`).join('')}
       ${item.keywords.map(k => `<span class="chip ghost">#${esc(k)}</span>`).join('')}
@@ -85,25 +104,81 @@ function itemCardHTML(item, { owner = false } = {}) {
 
 // ---------- 시작 화면 ----------
 
+function setupFormHTML(online) {
+  return `
+      <form id="setupForm">
+        <label>${online ? '방 이름 <small>(팀 이름)</small>' : '팀 이름'}<input name="team" required placeholder="예: 캡스톤 3조" maxlength="30"></label>
+        <label>수업명 <small>(선택, 교수자 보기에서 수업별로 묶여요)</small><input name="course" placeholder="예: 소프트웨어공학" maxlength="40"></label>
+        <label>팀원 이름 <small>(쉼표로 구분, 첫 번째가 나)</small>
+          <input name="members" required placeholder="예: 지민, 서준, 하은" maxlength="120" value="${authUser ? esc(authUser.name) + ', ' : ''}"></label>
+        <button class="btn primary" type="submit">${online ? '🏠 방 만들기' : '오피스 만들기'}</button>
+      </form>`;
+}
+
 function renderSetup() {
   $('#topbar').hidden = true;
-  const local = authActive() ? loadState() : null;
+  if (onlineMode()) return renderRoomGate();
   app.innerHTML = `
   <section class="setup">
     <div class="setup-card">
       <div class="logo">🧠</div>
       <h1>BrainRoom</h1>
       <p class="lead">각자 찾아본 자료가 <b>방 인테리어</b>가 되는 팀 브레인스토밍 오피스</p>
-      <form id="setupForm">
-        <label>팀 이름<input name="team" required placeholder="예: 캡스톤 3조" maxlength="30"></label>
-        <label>팀원 이름 <small>(쉼표로 구분, 첫 번째가 나)</small>
-          <input name="members" required placeholder="예: 지민, 서준, 하은" maxlength="120" value="${authUser ? esc(authUser.name) + ', ' : ''}"></label>
-        <button class="btn primary" type="submit">오피스 만들기</button>
-      </form>
+      ${setupFormHTML(false)}
       <div class="or">또는</div>
-      <button class="btn" id="sampleBtn">🎲 샘플 팀으로 시작하기</button>
-      ${local ? `<button class="btn" id="migrateBtn">💾 이 브라우저에 있던 「${esc(local.teamName)}」 올리기</button>` : ''}
+      <button class="btn" id="sampleBtn">🎲 샘플 팀으로 체험하기</button>
       <label class="btn ghost file-btn">📂 워크스페이스 파일 불러오기<input type="file" accept=".json" id="importFile" hidden></label>
+    </div>
+  </section>`;
+}
+
+// 로그인 후 첫 화면: 방 만들기 / 방 참여하기
+function renderRoomGate() {
+  const mode = cloud.setupMode;
+  const rooms = myRoomsHTML();
+  const local = loadState();
+  const back = mode
+    ? '<button class="btn ghost sm" data-cloud="mode:">← 처음으로</button>'
+    : state ? '<button class="btn ghost sm" data-cloud="back">← 보던 화면으로</button>' : '';
+  let body;
+  if (mode === 'create') {
+    body = `
+      <h2>🏠 방 만들기</h2>
+      <p class="muted sm">방을 만들면 상단 <b>🔗 초대 링크</b>로 팀원을 부를 수 있어요.</p>
+      ${setupFormHTML(true)}`;
+  } else if (mode === 'join') {
+    body = `
+      <h2>🔑 방 참여하기</h2>
+      <p class="muted sm">방에 있는 팀원에게 <b>초대 링크</b>를 받아 붙여넣으세요. 링크를 바로 열어도 참여돼요.</p>
+      <form id="joinForm" class="add-form">
+        <input name="link" required autocomplete="off" placeholder="초대 링크 붙여넣기 (…?team=…&code=…)">
+        <button class="btn primary">참여하기</button>
+      </form>`;
+  } else {
+    body = `
+      <div class="gate">
+        <button class="gate-card" data-cloud="mode:create"><span class="gate-icon">🏠</span><b>방 만들기</b><small>새 팀 방을 만들고 팀원을 초대해요</small></button>
+        <button class="gate-card" data-cloud="mode:join"><span class="gate-icon">🔑</span><b>방 참여하기</b><small>받은 초대 링크로 팀 방에 들어가요</small></button>
+      </div>
+      ${rooms ? `<div class="or">내 방</div><div class="menu-list">${rooms}</div>` : ''}
+      <details class="gate-more">
+        <summary>다른 방법으로 시작하기</summary>
+        <div class="menu-list">
+          <button class="btn" id="sampleBtn">🎲 샘플 팀으로 방 만들기</button>
+          ${local ? `<button class="btn" id="migrateBtn">💾 이 브라우저에 있던 「${esc(local.teamName)}」로 방 만들기</button>` : ''}
+          <label class="btn file-btn">📂 워크스페이스 파일로 방 만들기<input type="file" accept=".json" id="importFile" hidden></label>
+          <button class="btn ghost" data-cloud="local">💻 로그인 없이 이 기기에서만 쓰기</button>
+        </div>
+      </details>`;
+  }
+  app.innerHTML = `
+  <section class="setup">
+    <div class="setup-card">
+      <div class="logo">🧠</div>
+      <h1>BrainRoom</h1>
+      <p class="lead">${esc(authUser.name)}님, 어떻게 시작할까요?</p>
+      ${body}
+      <div class="gate-foot">${back}<button class="btn ghost sm" id="logoutBtn">다른 계정으로 로그인</button></div>
     </div>
   </section>`;
 }
@@ -124,6 +199,7 @@ function renderLogin() {
       <div class="logo">🧠</div>
       <h1>BrainRoom</h1>
       <p class="lead">각자 찾아본 자료가 <b>방 인테리어</b>가 되는 팀 브레인스토밍 오피스</p>
+      ${new URLSearchParams(location.search).get('team') ? '<p class="notice">🔑 방 초대 링크로 들어왔어요. 로그인하면 바로 그 방에 참여해요.</p>' : ''}
       <button class="btn google-btn" id="googleLogin" ${fileMode ? 'disabled' : ''}>${GOOGLE_LOGO}<span>Google 계정으로 로그인</span></button>
       ${fileMode
         ? '<p class="notice">⚠️ 파일을 직접 열면 Google 로그인이 동작하지 않아요.<br>로컬 서버(<code>python -m http.server 5173</code>)로 실행해 주세요.</p>'
@@ -158,7 +234,7 @@ function renderClaim() {
 
 function renderOffice() {
   const table = tableItems();
-  const links = crossMemberLinks(state.items);
+  const links = crossMemberLinks(visibleItems());
 
   const shared = {};
   state.members.forEach(m => profile(m.id).themes.forEach(({ theme }) => {
@@ -175,6 +251,8 @@ function renderOffice() {
       </div>
       <button class="btn" data-go="room" data-member="${state.meId}">🚪 내 방으로 가기</button>
     </div>
+
+    ${questsHTML()}
 
     <div class="office-grid">
       <article class="meeting-card" data-go="meeting">
@@ -195,8 +273,9 @@ function renderOffice() {
           ${roomHTML(m.id, { mini: true })}
           <div class="rc-info">
             <b>${esc(m.name)}</b>${m.id === state.meId ? '<span class="badge">나</span>' : ''}
-            <span class="muted">자료 ${p.items.length}개${p.last ? ` · ${timeAgo(p.last)}` : ''}</span>
+            <span class="muted">${activityStatus(p)} · 기록 ${p.items.length}개</span>
           </div>
+          ${p.items[0] ? `<p class="rc-latest">💬 ${TYPE_META[p.items[0].type].icon} ${esc(trunc(p.items[0].title, 26))} <span class="muted">${timeAgo(p.items[0].createdAt)}</span></p>` : ''}
           <div class="chips">${themeChips(p.themes, 3) || '<span class="muted">아직 탐색 주제 없음</span>'}</div>
         </article>`;
       }).join('')}
@@ -225,7 +304,7 @@ function renderRoom(memberId) {
     <div class="page-head">
       <div>
         <button class="btn ghost sm" data-go="meeting">← 회의실</button>
-        <h1 style="--mc:${m.color}" class="room-title">${esc(m.name)}의 방 <span class="badge">Lv.${p.level}</span></h1>
+        <h1 style="--mc:${m.color}" class="room-title">${esc(m.name)}의 방 <span class="badge">${activityStatus(p)}</span></h1>
       </div>
       <div class="room-nav">
         ${state.members.filter(o => o.id !== memberId).map(o =>
@@ -247,9 +326,14 @@ function renderRoom(memberId) {
               <label><input type="radio" name="type" value="${type}" ${i === 0 ? 'checked' : ''}><span>${meta.icon} ${meta.label}</span></label>`).join('')}
           </div>
           <input name="title" required maxlength="80" placeholder="제목">
-          <input name="url" maxlength="500" placeholder="링크 (선택)">
-          <textarea name="content" rows="4" maxlength="2000" placeholder="내용, 요약, 느낀 점…"></textarea>
+          <input name="url" maxlength="500" placeholder="링크 (선택, AI 대화는 공유 링크)">
+          <textarea name="content" rows="4" maxlength="8000" placeholder="내용, 요약, 느낀 점… (AI 대화는 대화 내용을 붙여넣기)"></textarea>
+          <label class="vis-field">공유 범위
+            <select name="visibility">${Object.entries(VISIBILITY).map(([k, v]) => `<option value="${k}">${v.icon} ${v.label}</option>`).join('')}</select></label>
+          <p class="muted sm">이메일·전화번호·주민등록번호 형태는 저장 전에 가려져요.</p>
           <button class="btn primary" type="submit">담기</button>
+          <label class="btn sm file-btn">🖥️ AI 대화 파일 불러오기 <small class="muted">(ChatGPT·Claude 내보내기 .json, .txt)</small>
+            <input type="file" id="aiFile" accept=".json,.txt,.md" hidden></label>
         </form>` : `
         <div class="card visiting">👀 <b>${esc(m.name)}</b>님의 방을 구경 중이에요.<br><span class="muted">마음에 드는 자료는 회의실로 보낼 수 있어요.</span></div>`}
 
@@ -273,16 +357,24 @@ function handleAdd(form) {
   const data = new FormData(form);
   const title = data.get('title').trim();
   if (!title) return;
+  const type = data.get('type');
+  const url = data.get('url').trim();
+  const content = data.get('content').trim();
+  const dup = findDuplicate({ memberId: state.meId, type, title, url });
+  if (dup) return toast(`이미 담긴 기록이에요: 「${dup.title}」`); // ONRQ-4
   const before = new Set(profile(state.meId).themes.map(t => t.theme.id));
+  const isAi = type === 'ai';
   const item = addItem({
     memberId: state.meId,
-    type: data.get('type'),
+    type,
     title,
-    url: data.get('url').trim(),
-    content: data.get('content').trim(),
+    url,
+    content: isAi ? aiSummary(content) : content,
+    visibility: data.get('visibility'),
+    ai: isAi ? aiFields({ tool: detectAiTool(url, content.slice(0, 500)), transcript: content, firstPrompt: `${title} ${content.slice(0, 400)}` }) : null,
   });
   const newThemes = item.themes.filter(t => !before.has(t));
-  toast(`${TYPE_META[item.type].icon} ${TYPE_META[item.type].place}에 추가됐어요`);
+  toast(`${TYPE_META[item.type].icon} ${TYPE_META[item.type].place}에 추가됐어요 · ${VISIBILITY[item.visibility].icon} ${VISIBILITY[item.visibility].label}`);
   newThemes.forEach(t => toast(`${THEME_BY_ID[t].emoji} '${THEME_BY_ID[t].name}' 소품이 방에 생겼어요!`));
   render();
 }
@@ -291,7 +383,7 @@ function handleAdd(form) {
 
 function renderMeeting() {
   const onTable = tableItems();
-  const recs = crossMemberLinks(state.items).slice(0, 6);
+  const recs = crossMemberLinks(visibleItems()).slice(0, 6);
   const ranked = [...onTable].sort((a, b) => b.votes.length - a.votes.length);
 
   app.innerHTML = `
@@ -305,6 +397,7 @@ function renderMeeting() {
     </div>
 
     ${hallHTML()}
+    ${memberStatusHTML()}
 
     <div class="page-head board-head" id="board">
       <div>
@@ -324,7 +417,7 @@ function renderMeeting() {
             <summary><i class="dot"></i>${esc(m.name)} <span class="muted">(${items.length})</span></summary>
             ${items.map(it => `
               <div class="tray-item ${it.table ? 'placed' : ''}" draggable="${!it.table}" data-id="${it.id}" data-search="${esc((it.title + ' ' + it.keywords.join(' ')).toLowerCase())}">
-                <span>${TYPE_META[it.type].icon}</span><span class="ti-title">${esc(it.title)}</span>
+                <span>${TYPE_META[it.type].icon}</span><span class="ti-title">${esc(it.title)}</span>${it.visibility === 'me' ? '<span title="나만 보기">🔒</span>' : ''}
                 ${it.table ? '<span class="muted sm">테이블</span>' : '<button class="btn icon" data-act="table" title="테이블에 올리기">＋</button>'}
               </div>`).join('') || '<p class="muted sm">자료 없음</p>'}
           </details>`;
@@ -366,7 +459,8 @@ function renderMeeting() {
         <div class="card">
           <h3>🗳️ 투표 현황</h3>
           ${ranked.map((it, i) => `
-            <div class="rank"><b>${i + 1}</b><span>${esc(it.title)}</span><span class="muted">👍 ${it.votes.length}</span></div>`).join('')
+            <div class="rank"><b>${i + 1}</b><span>${esc(it.title)}</span><span class="muted">👍 ${it.votes.length}</span>
+              <button class="btn sm" data-tr="rank-decide" data-item="${it.id}" title="결정 기록에 추가">✅ 결정</button></div>`).join('')
             || '<p class="muted">테이블 위 카드에 👍를 눌러 투표하세요.</p>'}
         </div>
       </aside>
@@ -408,7 +502,8 @@ function drawLinks() {
 function exportMarkdown() {
   const date = new Date().toLocaleDateString('ko-KR');
   const ranked = [...tableItems()].sort((a, b) => b.votes.length - a.votes.length);
-  const recs = crossMemberLinks(tableItems().length ? tableItems() : state.items).slice(0, 6);
+  const recs = crossMemberLinks(tableItems().length ? tableItems() : visibleItems()).slice(0, 6);
+  const decisions = confirmedDecisions();
   const lines = [
     `# ${state.teamName} 아이디어 회의 초안`,
     '',
@@ -434,7 +529,13 @@ function exportMarkdown() {
       `- ${r.a.title} (${member(r.a.memberId).name}) ↔ ${r.b.title} (${member(r.b.memberId).name}): ${r.labels.join(', ')}`)
       : ['- (연결점 없음)']),
     '',
-    '## 4. 다음 단계',
+    '## 4. 결정 기록',
+    ...(decisions.length ? decisions.flatMap(d => [
+      `- ${new Date(d.createdAt).toLocaleDateString('ko-KR')} ${d.text}`,
+      ...decisionSources(d).map(s => `   - 근거: ${s.title} (${member(s.memberId).name})${s.url ? ` ${safeUrl(s.url)}` : ''}`),
+    ]) : ['- (확정된 결정 없음)']),
+    '',
+    '## 5. 다음 단계',
     `- [ ] ${ranked[0] ? `최다 득표 아이디어 「${ranked[0].title}」 구체화` : '아이디어 후보 추리기'}`,
     '- [ ] 연결점이 있는 아이디어끼리 합쳐볼 수 있는지 검토',
     '- [ ] 역할 분담 및 다음 회의 일정 정하기',
@@ -494,14 +595,12 @@ function closeModal() {
 }
 
 function openMenu() {
+  const online = cloudOn() || state.cloudProf;
   openModal(`
     <h2>⚙️ 워크스페이스</h2>
-    ${cloudOn() ? `
-    <p class="muted">☁️ 클라우드에 저장되고 팀원과 실시간으로 공유돼요. 아래 링크로 팀원을 초대하세요.</p>
-    <div class="inline-form">
-      <input id="inviteLink" readonly value="${esc(inviteLink())}">
-      <button class="btn" id="copyInvite">초대 링크 복사</button>
-    </div>` : '<p class="muted">지금은 이 브라우저에만 저장돼요. 파일로 내보내 팀원과 주고받을 수 있어요.</p>'}
+    ${CLOUD_ENABLED && authUser ? cloudMenuHTML() : ''}
+    <p class="muted">${online ? '🌐 온라인 팀이에요. 바뀐 내용은 팀원 화면에 바로 반영돼요.' : '지금은 이 브라우저에만 저장돼요. 파일로 내보내 팀원과 주고받을 수 있어요.'}</p>
+    <p class="muted sm">${state.course ? `수업: ${esc(state.course)} · ` : ''}교수자 보기 접근 차단 기록 ${state.accessLog.length}건</p>
     ${guestMode ? '<p class="muted sm">🎲 샘플 팀 체험 중이에요. 여기서 바꾼 내용은 저장되지 않아요.</p>' : ''}
     ${AUTH_ENABLED ? '' : '<p class="muted sm">🔓 로그인 없는 데모 모드로 실행 중이에요. <code>js/firebase-config.js</code>를 채우면 Google 로그인이 켜져요.</p>'}
     <form id="memberForm" class="inline-form">
@@ -509,26 +608,26 @@ function openMenu() {
       <button class="btn">팀원 추가</button>
     </form>
     <div class="menu-list">
-      <button class="btn" id="exportWs">💾 워크스페이스 파일로 내보내기</button>
-      <label class="btn file-btn">📂 워크스페이스 파일 불러오기<input type="file" accept=".json" id="importFile" hidden></label>
-      ${cloudOn()
-        ? '<button class="btn danger" id="resetWs">🚪 이 워크스페이스에서 나가기</button>'
-        : '<button class="btn danger" id="resetWs">🗑️ 초기화 (처음부터)</button>'}
+      <button class="btn" id="exportTeam">👥 팀 공유용 파일 내보내기 <small class="muted">(🔒 나만 기록 제외)</small></button>
+      <button class="btn" id="exportProf">🎓 교수자 제출용 파일 <small class="muted">('교수자까지' 기록만 내용 포함)</small></button>
+      <button class="btn" id="exportWs">💾 전체 백업 <small class="muted">(이 기기 보관용, 나만 기록 포함)</small></button>
+      ${online ? '' : '<button class="btn" data-tr="enter-prof">🎓 교수자 보기로 전환 (시연)</button>'}
+      ${online ? '' : `<label class="btn file-btn">📂 워크스페이스 파일 불러오기<input type="file" accept=".json" id="importFile" hidden></label>
+      <button class="btn danger" id="resetWs">🗑️ 초기화 (처음부터)</button>`}
     </div>
     <div class="modal-actions"><button class="btn ghost" data-close>닫기</button></div>`);
-  $('#exportWs').onclick = () => download(`brainroom_${state.teamName}.json`, JSON.stringify(state, null, 2), 'application/json');
-  if (cloudOn()) {
-    $('#copyInvite').onclick = async () => {
-      try { await navigator.clipboard.writeText(inviteLink()); } catch { $('#inviteLink').select(); document.execCommand('copy'); }
-      toast('초대 링크를 복사했어요');
-    };
+  cloudFillInvites();
+  if (state.cloudProf) {
+    $('#memberForm').hidden = true;
+    ['#exportTeam', '#exportProf', '#exportWs'].forEach(s => { $(s).hidden = true; });
   }
-  $('#resetWs').onclick = () => {
-    if (cloudOn()) {
-      if (!confirm('이 계정에서 워크스페이스 연결을 끊을까요? 팀원들의 데이터는 그대로 남고, 초대 링크로 다시 들어올 수 있어요.')) return;
-      closeModal();
-      return leaveCloudWorkspace();
-    }
+  $('#exportWs').onclick = () => download(`brainroom_${state.teamName}_백업.json`, JSON.stringify(state, null, 2), 'application/json');
+  $('#exportTeam').onclick = () => {
+    const shared = { ...state, items: state.items.filter(i => i.visibility !== 'me'), viewer: 'student', accessLog: [] };
+    download(`brainroom_${state.teamName}.json`, JSON.stringify(shared, null, 2), 'application/json');
+  };
+  $('#exportProf').onclick = () => download(`brainroom_${state.teamName}_교수자제출.json`, JSON.stringify(sanitizeForProf(state), null, 2), 'application/json');
+  if ($('#resetWs')) $('#resetWs').onclick = () => {
     if (!confirm('모든 자료가 지워집니다. 초기화할까요?')) return;
     state = null;
     if (!guestMode) try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* 무시 */ }
@@ -543,12 +642,24 @@ function importWorkspace(file) {
     try {
       const data = JSON.parse(reader.result);
       if (!Array.isArray(data.members) || !Array.isArray(data.items)) throw new Error('형식 오류');
+      if (data.forProfessor) { closeModal(); return toast('교수자 제출용 파일은 교수자 보기의 "팀 제출 파일 추가"로 열어 주세요'); }
+      migrate(data);
       data.items.forEach(analyze);
-      if (cloudOn() && !confirm('파일 내용으로 새 클라우드 워크스페이스를 만들까요? (지금 워크스페이스는 그대로 남아요)')) return;
-      state = { ...data, view: 'meeting', roomId: null };
+      if (onlineMode() && (!state || cloud.showSetup)) {
+        closeModal();
+        return cloudCreateTeamFrom(data);
+      }
+      // 같은 팀 파일이면, 이 기기에만 있던 '나만' 기록은 지우지 않고 합친다
+      const sameTeam = Boolean(state) && data.members.some(m => member(m.id));
+      if (sameTeam) {
+        const ids = new Set(data.items.map(i => i.id));
+        data.items.push(...state.items.filter(i => i.visibility === 'me' && !ids.has(i.id)));
+      }
+      state = { ...data, view: 'meeting', roomId: null, viewer: 'student', meId: sameTeam ? state.meId : data.meId };
       if (!member(state.meId)) state.meId = state.members[0]?.id;
+      saveState();
       closeModal();
-      commitNewWorkspace();
+      render();
       toast('워크스페이스를 불러왔어요');
     } catch (e) {
       toast('불러올 수 없는 파일이에요');
@@ -562,7 +673,12 @@ function importWorkspace(file) {
 function renderTopbar() {
   const bar = $('#topbar');
   bar.hidden = false;
-  $('#teamName').textContent = state.teamName;
+  $('#teamName').textContent = state.teamName + (cloudOn() ? ' · 🌐 온라인' : '');
+  $('#inviteBtn').hidden = !cloudOn();
+  $('#roomsBtn').hidden = !(CLOUD_ENABLED && authUser && !guestMode);
+  const prof = isProfView();
+  $('#nav').hidden = prof;
+  $('#profBadge').hidden = !prof;
   document.querySelectorAll('#nav [data-go]').forEach(b => {
     const active = b.dataset.go === state.view && (b.dataset.go !== 'room' || state.roomId === state.meId);
     b.classList.toggle('active', active);
@@ -574,14 +690,17 @@ function renderTopbar() {
     $('#userChip').innerHTML = '<button class="btn ghost sm" id="exitGuestBtn">체험 끝내고 로그인</button>';
   }
   if (authActive()) {
-    const me = member(state.meId);
+    // 교수자는 팀원 명단에 없으므로 로그인 계정 이름을 쓴다
+    const me = member(state.meId) || { name: authUser.name, color: '#64748b' };
     $('#userChip').innerHTML = `
       ${authUser.photo ? `<img src="${esc(authUser.photo)}" alt="" referrerpolicy="no-referrer">` : `<i class="dot" style="--mc:${me.color}"></i>`}
       <span title="${esc(authUser.email)}">${esc(me.name)}</span>
       <button class="btn ghost sm" id="logoutBtn">로그아웃</button>`;
-  } else {
+  }
+  if (!authActive()) {
     $('#meSelect').innerHTML = state.members.map(m =>
-      `<option value="${m.id}" ${m.id === state.meId ? 'selected' : ''}>${esc(m.name)}</option>`).join('');
+      `<option value="${m.id}" ${!prof && m.id === state.meId ? 'selected' : ''}>${esc(m.name)}</option>`).join('')
+      + `<option value="__prof" ${prof ? 'selected' : ''}>🎓 교수자</option>`;
   }
 }
 
@@ -591,52 +710,26 @@ function render() {
     return;
   }
   if (authActive() && !authUser) return renderLogin();
-  if (authActive() && cloudLoading) {
+  if (cloud.busy || (cloudOn() && !cloud.loaded)) {
     $('#topbar').hidden = true;
-    app.innerHTML = '<div class="loading">워크스페이스를 불러오는 중…</div>';
+    app.innerHTML = '<div class="loading">🌐 온라인 팀을 불러오는 중…</div>';
     return;
   }
-  if (!state) return renderSetup();
-  if (authActive()) {
+  if (!state || cloud.showSetup) return renderSetup();
+  if (authActive() && !isProfView()) {
     const mine = memberByUid(authUser.uid);
     if (!mine) return renderClaim();
     if (state.meId !== mine.id) { state.meId = mine.id; saveState(); }
   }
   renderTopbar();
-  if (state.view === 'room') renderRoom(state.roomId || state.meId);
+  if (isProfView()) renderProfessor();
+  else if (state.view === 'room') renderRoom(state.roomId || state.meId);
   else if (state.view === 'office') renderOffice();
+  else if (state.view === 'timeline') renderTimeline();
+  else if (state.view === 'decisions') renderDecisions();
+  else if (state.view === 'report') renderReport();
   else renderMeeting();
   if (panelSpec) renderPanel();
-}
-
-// 새로 만든 워크스페이스 저장: 로그인 모드는 Firestore에 올리고, 데모 모드는 이 브라우저에 저장
-function commitNewWorkspace() {
-  if (authActive()) return cloudCreateWorkspace(state);
-  saveState();
-  render();
-}
-
-// 팀원의 변경이 도착했을 때 다시 그리기. 입력 중이거나 카드를 끄는 중이면 끝난 뒤로 미룬다
-let renderPending = false;
-function scheduleRender() {
-  const el = document.activeElement;
-  if (dragging || (el && el.matches('input, textarea, select') && !el.closest('#modal'))) {
-    renderPending = true;
-    return;
-  }
-  renderPending = false;
-  render();
-}
-document.addEventListener('focusout', () => {
-  if (renderPending) setTimeout(() => { if (renderPending) scheduleRender(); });
-});
-
-function onAuthChange() {
-  if (authActive()) {
-    if (authUser && cloud?.uid !== authUser.uid) return startCloud(authUser);
-    if (!authUser && cloud) { stopCloud(); state = null; }
-  }
-  render();
 }
 
 // ---------- 이벤트 ----------
@@ -652,6 +745,7 @@ document.addEventListener('click', e => {
   if (t.closest('#logoutBtn')) {
     closePanel();
     closeModal();
+    if (CLOUD_ENABLED) clearSession();
     return signOutUser().then(() => toast('로그아웃했어요'));
   }
 
@@ -659,6 +753,7 @@ document.addEventListener('click', e => {
   if (claim) {
     const id = claim.dataset.claim === 'new' ? addMember(authUser.name).id : claim.dataset.claim;
     claimMember(id, authUser);
+    if (cloudOn()) cloudSetMemberId(id);
     toast(`${member(id).name}님의 방에 연결됐어요`);
     return go('meeting');
   }
@@ -673,22 +768,28 @@ document.addEventListener('click', e => {
   if (t.closest('#exitGuestBtn')) {
     guestMode = false;
     closePanel();
+    closeModal();
     state = authActive() ? null : loadState();
+    if (authActive()) return cloudOnAuth();
     return render();
   }
 
   if (t.closest('#sampleBtn')) {
+    if (onlineMode()) {
+      saveSuppressed = true; // 샘플을 만드는 동안 이 브라우저의 데이터를 덮어쓰지 않는다
+      const ws = sampleWorkspace();
+      saveSuppressed = false;
+      return cloudCreateTeamFrom(ws);
+    }
     state = sampleWorkspace();
-    commitNewWorkspace();
+    render();
     toast('샘플 팀 "캡스톤 3조"를 불러왔어요');
     return;
   }
   if (t.closest('#migrateBtn')) {
-    state = loadState();
-    state.items.forEach(analyze);
-    commitNewWorkspace();
-    toast(`「${state.teamName}」을(를) 클라우드에 올렸어요`);
-    return;
+    const local = loadState();
+    local.items.forEach(analyze);
+    return cloudCreateTeamFrom(local);
   }
 
   const zone = t.closest('.room:not(.mini) .zone');
@@ -709,7 +810,11 @@ document.addEventListener('click', e => {
     if (!item) return;
     if (act.dataset.act === 'table') {
       if (item.table) { item.table = null; saveState(); toast('테이블에서 내렸어요'); }
-      else { placeOnTable(item); toast('🗂️ 회의 테이블에 올렸어요'); }
+      else {
+        const wasPrivate = item.visibility === 'me';
+        placeOnTable(item);
+        toast(wasPrivate ? '🗂️ 회의 테이블에 올렸어요 · 👥 팀 공개로 바뀌었어요' : '🗂️ 회의 테이블에 올렸어요');
+      }
     } else if (act.dataset.act === 'vote') {
       item.votes = item.votes.includes(state.meId) ? item.votes.filter(v => v !== state.meId) : [...item.votes, state.meId];
       saveState();
@@ -718,7 +823,7 @@ document.addEventListener('click', e => {
       saveState();
       toast('📌 화이트보드에 고정했어요');
     } else if (act.dataset.act === 'delete') {
-      if (!confirm(`「${item.title}」을(를) 삭제할까요?`)) return;
+      if (!confirm(`「${item.title}」을(를) 삭제할까요?\n팀·교수자 화면에서 바로 사라지고 이 기기에서도 지워져요.`)) return;
       deleteItem(item.id);
     }
     return render();
@@ -735,9 +840,11 @@ document.addEventListener('submit', e => {
     const data = new FormData(form);
     const names = data.get('members').split(',').map(s => s.trim()).filter(Boolean).slice(0, 8);
     if (!names.length) return;
-    state = newWorkspace(data.get('team').trim(), [...new Set(names)]);
+    if (onlineMode()) return cloudCreateTeam(data.get('team').trim(), [...new Set(names)], data.get('course').trim());
+    state = newWorkspace(data.get('team').trim(), [...new Set(names)], data.get('course').trim());
     if (authUser) claimMember(state.members[0].id, authUser);
-    commitNewWorkspace();
+    saveState();
+    render();
   } else if (form.id === 'addForm') {
     handleAdd(form);
   } else if (form.id === 'memberForm') {
@@ -752,7 +859,9 @@ document.addEventListener('submit', e => {
 
 document.addEventListener('change', e => {
   if (e.target.id === 'meSelect') {
+    if (e.target.value === '__prof') return setViewer('prof');
     state.meId = e.target.value;
+    state.viewer = 'student';
     saveState();
     render();
     toast(`${member(state.meId).name}(으)로 전환했어요`);
@@ -818,11 +927,10 @@ document.addEventListener('pointerup', () => {
   itemById(card.dataset.id).table = { x: parseFloat(card.style.left), y: parseFloat(card.style.top) };
   saveState();
   dragging = null;
-  if (renderPending) scheduleRender();
 });
 
 window.addEventListener('resize', () => { if (state?.view === 'meeting') drawLinks(); });
 
-state = AUTH_ENABLED ? null : loadState();
+state = loadState();
 render();
-initAuth(onAuthChange);
+initAuth(cloudOnAuth);

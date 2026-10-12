@@ -99,11 +99,12 @@ function windowSVG() {
   ].join('');
 }
 
-function deskSVG(m, lit) {
-  const monitor = box(3.9, 3.12, 30, 0.75, 0.12, 26, '#1f2937', { left: lit ? '#1e40af' : '#334155' });
+function deskSVG(m, lit, aiCount) {
+  const screen = aiCount ? '#38bdf8' : lit ? '#1e40af' : '#334155';
+  const monitor = box(3.9, 3.12, 30, 0.75, 0.12, 26, '#1f2937', { left: screen });
   return `
     ${box(3.2, 3.0, 0, 2.0, 0.9, 30, '#a0703f')}
-    <g class="zone" data-zone="monitor"><title>AI 대화 (연동 예정)</title>${monitor}</g>
+    <g class="zone" data-zone="monitor"><title>모니터 · AI 대화 ${aiCount}개</title>${monitor}</g>
     ${box(4.85, 3.15, 30, 0.12, 0.12, 22, '#6b7280')}
     ${box(4.72, 3.05, 50, 0.35, 0.3, 8, lit ? '#fbbf24' : '#9ca3af', { attrs: lit ? 'class="glow"' : '' })}
     ${box(3.95, 4.15, 0, 0.6, 0.55, 16, shade(m.color, -0.1))}`;
@@ -118,7 +119,7 @@ function roomHTML(memberId, { mini = false } = {}) {
 
   const objects = [
     { key: 5.3, svg: shelfSVG(p.links) },
-    { key: 7.6, svg: deskSVG(m, lit) },
+    { key: 7.6, svg: deskSVG(m, lit, p.ais.length) },
     { key: 7.0, svg: palm(0.6, 6.4, 0.9) },
     { key: 10.8, svg: avatar(5.9, 4.9, m, { tag: !mini, bubble: !mini && p.themes[0] ? p.themes[0].theme.emoji : '' }) },
   ];
@@ -149,7 +150,7 @@ function roomHTML(memberId, { mini = false } = {}) {
   return `
   <div class="room ${mini ? 'mini' : ''}" style="--mc:${m.color}">
     ${isoSVG(ROOM_W, ROOM_D, ROOM_H, scene)}
-    <div class="nameplate">${esc(m.name)}의 방 <b>Lv.${p.level}</b></div>
+    <div class="nameplate">${esc(m.name)}의 방 <b>${activityStatus(p)}</b></div>
     ${p.items.length ? '' : '<div class="room-empty">아직 빈 방이에요<br><small>자료를 담으면 방이 꾸며져요</small></div>'}
     <div class="shade" style="--dark:${dark}"></div>
   </div>`;
@@ -161,7 +162,7 @@ function zoneItems(memberId, zone) {
   if (zone === 'shelf') return { title: '📚 책장 · 참고 자료', items: p.links };
   if (zone === 'board') return { title: '🗒️ 포스트잇 보드 · 메모', items: p.memos };
   if (zone === 'whiteboard') return { title: '💡 화이트보드 · 아이디어', items: p.ideas };
-  if (zone === 'monitor') return { title: '🖥️ 모니터 · AI 대화', items: [], empty: 'ChatGPT·Claude 대화 연동은 다음 버전에서 추가될 예정이에요.' };
+  if (zone === 'monitor') return { title: '🖥️ 모니터 · AI 대화', items: p.ais, empty: 'AI 대화가 없어요. "내 방에 담기"에서 AI 대화를 붙여넣거나, 내보낸 대화 파일을 불러올 수 있어요.' };
   if (zone.startsWith('theme:')) {
     const theme = THEME_BY_ID[zone.slice(6)];
     return { title: `${theme.emoji} ${theme.name} 관련 자료`, items: p.items.filter(i => i.themes.includes(theme.id)) };

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BrainRoom</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@latest/dist/galmuri.css">
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=20261012c">
 </head>
 <body>
   <header id="topbar" class="topbar" hidden>
@@ -14,9 +14,15 @@
       <button data-go="meeting">🗂️ 회의실</button>
       <button data-go="room">🚪 내 방</button>
       <button data-go="office">🏢 전체 보기</button>
+      <button data-go="timeline">🕒 타임라인</button>
+      <button data-go="decisions">✅ 결정</button>
+      <button data-go="report">📊 리포트</button>
     </nav>
+    <div id="profBadge" class="prof-badge" hidden>🎓 교수자 보기 <button class="btn sm" data-tr="leave-prof">학생 보기로</button></div>
     <div class="me">
       <label id="meSwitch">나 <select id="meSelect" title="현재 사용자 (데모용 전환)"></select></label>
+      <button id="roomsBtn" class="btn sm" hidden title="방 만들기 · 참여하기 · 다른 방으로 이동">🏠 방 목록</button>
+      <button id="inviteBtn" class="btn sm" hidden title="이 방의 초대 링크 보기">🔗 초대 링크</button>
       <div id="userChip" class="user-chip" hidden></div>
       <button id="menuBtn" class="btn icon" title="워크스페이스 설정">⚙️</button>
     </div>
@@ -30,15 +36,17 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-  <script src="js/firebase-config.js"></script>
-  <script src="js/auth.js"></script>
-  <script src="js/themes.js"></script>
-  <script src="js/nlp.js"></script>
-  <script src="js/store.js"></script>
-  <script src="js/cloud.js"></script>
-  <script src="js/iso.js"></script>
-  <script src="js/room.js"></script>
-  <script src="js/hall.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/firebase-config.js?v=20261012c"></script>
+  <script src="js/auth.js?v=20261012c"></script>
+  <script src="js/themes.js?v=20261012c"></script>
+  <script src="js/nlp.js?v=20261012c"></script>
+  <script src="js/store.js?v=20261012c"></script>
+  <script src="js/trace.js?v=20261012c"></script>
+  <script src="js/cloud.js?v=20261012c"></script>
+  <script src="js/iso.js?v=20261012c"></script>
+  <script src="js/room.js?v=20261012c"></script>
+  <script src="js/hall.js?v=20261012c"></script>
+  <script src="js/views.js?v=20261012c"></script>
+  <script src="js/app.js?v=20261012c"></script>
 </body>
 </html>
