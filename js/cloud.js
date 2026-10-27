@@ -82,9 +82,11 @@ function initDb() {
 const teamRef = (id = cloud.teamId) => db.collection('teams').doc(id);
 const userRef = () => db.collection('users').doc(authUser.uid);
 
-function writeFailed(e) {
-  console.error(e);
-  toast(e.code === 'permission-denied' ? '이 작업을 할 권한이 없어요' : '저장하지 못했어요. 인터넷 연결을 확인해 주세요');
+function writeFailed(e, what = '') {
+  console.error(what || 'Firestore 저장 실패', e);
+  toast(e.code === 'permission-denied'
+    ? `${what ? `${what} 저장이` : '이 작업이'} 거절됐어요. 권한이 없거나 Firebase 콘솔의 Firestore 규칙이 최신(firestore.rules)이 아닐 수 있어요`
+    : '저장하지 못했어요. 인터넷 연결을 확인해 주세요');
 }
 
 // ---------- 로그인 후 시작 ----------
@@ -166,6 +168,7 @@ function logDenied(teamId, what) {
 // ---------- 팀 열기 / 닫기 ----------
 
 function cloudClose() {
+  if (typeof call !== 'undefined' && call.id) leaveCall(); // 방을 떠나면 회의에서도 나간다
   cloud.unsubs.forEach(u => u());
   cloud.unsubs = [];
   cloud.teamId = null;
@@ -181,9 +184,10 @@ function cloudOpenTeam(teamId) {
   cloud.teamId = teamId;
   cloud.docs = {
     team: null, meta: new Map(), itemsTeam: new Map(), itemsProf: new Map(), itemsMine: new Map(),
-    decisions: new Map(), quests: new Map(), corrections: new Map(), logs: new Map(),
+    decisions: new Map(), quests: new Map(), corrections: new Map(), logs: new Map(), calls: new Map(),
   };
-  cloud.synced = { team: '', items: {}, decisions: {}, quests: {}, corrections: {}, logs: {} };
+  cloud.callsDenied = false;
+  cloud.synced = { team: {}, items: {}, decisions: {}, quests: {}, corrections: {}, logs: {} };
   state = migrate({
     version: 1, teamId, teamName: '', course: '', members: [], items: [], meId: null,
     view: 'meeting', roomId: null, viewer: 'student',
@@ -220,6 +224,15 @@ function cloudOpenTeam(teamId) {
   listen(t.collection('items').where('visibility', '==', 'prof'), 'itemsProf');
   listen(t.collection('items').where('ownerUid', '==', authUser.uid), 'itemsMine');
   ['decisions', 'quests', 'corrections', 'logs'].forEach(c => listen(t.collection(c), c));
+  // 회의 기록: 예전 규칙이면 읽기가 거절되는데, 그래도 방은 쓸 수 있게 따로 처리한다
+  cloud.unsubs.push(t.collection('calls').onSnapshot(snap => {
+    cloud.docs.calls = new Map(snap.docs.map(d => [d.id, d.data()]));
+    rebuildState();
+  }, err => {
+    console.error(err);
+    cloud.callsDenied = true;
+    rebuildState();
+  }));
 }
 
 function stubFromMeta(id, m) {
@@ -232,7 +245,7 @@ function stubFromMeta(id, m) {
 }
 
 function teamFields(src) {
-  return { teamName: src.teamName, course: src.course || '', members: src.members || [], decisionDismissed: src.decisionDismissed || [] };
+  return { teamName: src.teamName, course: src.course || '', members: src.members || [], decisionDismissed: src.decisionDismissed || [], links: src.links || {} };
 }
 
 // 스냅샷들을 앱이 쓰는 state 하나로 합친다
@@ -244,7 +257,8 @@ function rebuildState() {
   // 명단에는 연결돼 있는데 역할 문서에 팀원 id가 없으면 (나갔다가 다시 들어온 경우 등) 채운다
   const mine = state.members.find(m => m.uid === authUser.uid);
   if (mine && cloud.roleDoc?.role === 'student' && cloud.roleDoc.memberId == null) cloudSetMemberId(mine.id);
-  cloud.synced.team = stableStr(teamFields(d.team));
+  const serverTeam = teamFields(d.team);
+  cloud.synced.team = Object.fromEntries(Object.keys(serverTeam).map(k => [k, stableStr(serverTeam[k])]));
 
   const full = new Map([...d.itemsTeam, ...d.itemsProf, ...d.itemsMine].map(([id, it]) => [id, { votes: [], table: null, ...it }]));
   const items = [];
@@ -258,6 +272,8 @@ function rebuildState() {
     cloud.synced[c] = Object.fromEntries([...d[c]].map(([id, x]) => [id, stableStr(x)]));
   }
   state.changeLog = [...d.logs.values()].sort((a, b) => a.at - b.at);
+  state.calls = cloud.callsDenied ? null : [...d.calls.values()].sort((a, b) => b.startedAt - a.startedAt);
+  if (typeof scheduleTalkSync === 'function') scheduleTalkSync(); // 끝난 회의의 내 발언 요약을 내 방에
   cloud.synced.logs = Object.fromEntries([...d.logs].map(([id, x]) => [id, stableStr(x)]));
   scheduleRender();
 }
@@ -307,10 +323,12 @@ function cloudPush() {
   const me = authUser.uid;
   const FV = firebase.firestore.FieldValue;
 
+  // 방 정보는 바뀐 칸만 보낸다 (바뀌지 않은 새 칸까지 보내면 예전 규칙에서 저장 전체가 거절된다)
   const tf = teamFields(state);
-  if (stableStr(tf) !== cloud.synced.team) {
-    cloud.synced.team = stableStr(tf);
-    t.update(tf).catch(writeFailed);
+  const changed = Object.keys(tf).filter(k => stableStr(tf[k]) !== cloud.synced.team[k]);
+  if (changed.length) {
+    changed.forEach(k => { cloud.synced.team[k] = stableStr(tf[k]); });
+    t.update(Object.fromEntries(changed.map(k => [k, tf[k]]))).catch(e => writeFailed(e, `방 정보(${changed.join(', ')})`));
   }
 
   const seen = new Set();

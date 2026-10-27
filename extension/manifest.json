@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "BrainRoom 대화 담기",
+  "version": "0.1.0",
+  "description": "ChatGPT·Claude·Gemini에서 고른 대화만 BrainRoom 방으로 보냅니다. 서버로 보내지 않고 열려 있는 BrainRoom 탭으로만 전달합니다.",
+  "permissions": ["storage", "contextMenus"],
+  "host_permissions": [
+    "https://chiseongan.github.io/brainroom/*",
+    "http://localhost:5173/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "BrainRoom 대화 담기", "default_popup": "popup.html" },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://claude.ai/*", "https://gemini.google.com/*"],
+      "js": ["capture.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://chiseongan.github.io/brainroom/*", "http://localhost:5173/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

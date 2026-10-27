@@ -1,10 +1,13 @@
 // 개인 방 씬 (2.5D 아이소메트릭). 미니 카드와 큰 화면에서 같은 SVG를 쓴다.
 
 const ROOM_W = 8, ROOM_D = 7, ROOM_H = 130;
-const PROP_SLOTS = [
-  { x: 2.9, y: 6.7 }, { x: 7.1, y: 3.4 }, { x: 6.3, y: 5.9 },
-  { x: 2.0, y: 1.1 }, { x: 4.3, y: 6.4 }, { x: 5.8, y: 1.2 },
+// 회의 키워드 사물 자리. 책상 위는 모니터 앞·옆, 바닥은 벽 쪽 빈자리 (주제 소품·가구와 겹치지 않게)
+const DESK_SLOTS = [{ x: 3.42, y: 3.32 }, { x: 3.45, y: 3.68 }, { x: 4.25, y: 3.62 }, { x: 4.88, y: 3.64 }];
+const FLOOR_SLOTS = [
+  { x: 2.85, y: 0.45 }, { x: 0.45, y: 0.6 }, { x: 0.45, y: 2.55 }, { x: 7.35, y: 4.5 }, { x: 7.35, y: 5.8 }, { x: 5.2, y: 6.45 },
+  { x: 2.0, y: 1.1 }, { x: 5.8, y: 1.2 }, { x: 7.1, y: 3.4 }, { x: 6.3, y: 5.9 }, { x: 4.3, y: 6.4 }, { x: 2.9, y: 6.7 },
 ];
+const MIC_SPOT = { x: 1.3, y: 1.9 };
 const BOOK_COLORS = ['#e76f51', '#2a9d8f', '#e9c46a', '#264653', '#f4a261', '#8d6cab', '#4d908e', '#d62828'];
 const NOTE_COLORS = ['#fff3a3', '#ffd1dc', '#c8f7c5', '#cde7ff'];
 
@@ -57,16 +60,19 @@ function shelfSVG(links) {
 
 function whiteboardSVG(p) {
   const x0 = 3.2, x1 = 6.3, z0 = 42, z1 = 112;
-  const title = p.pinned ? p.pinned.title : '아직 없음';
-  // 화이트보드 폭에 맞춰 8글자씩 최대 3줄
-  const lines = [title.slice(0, 8), title.slice(8, 16), title.length > 24 ? title.slice(16, 23) + '…' : title.slice(16, 24)].filter(Boolean);
+  // 아이디어 개수만큼 포스트잇 (글씨 없이). 아이디어를 누르면 내용이 나온다
+  const notes = p.ideas.slice(0, 8).map((it, i) => {
+    const col = i % 4, row = Math.floor(i / 4);
+    const nx = x0 + 0.25 + col * 0.72, nz = z1 - 12 - row * 30;
+    const tilt = (hashCode(it.id) % 5) - 2;
+    return `<g><title>아이디어</title>${wallRectY(nx, nx + 0.55, nz - 22 + tilt, nz + tilt, NOTE_COLORS[(i + 1) % 4], OUTLINE)}
+      ${wallRectY(nx + 0.08, nx + 0.45, nz - 8 + tilt, nz - 6 + tilt, '#94a3b8')}${wallRectY(nx + 0.08, nx + 0.34, nz - 14 + tilt, nz - 12 + tilt, '#94a3b8')}</g>`;
+  }).join('');
   return `<g class="zone" data-zone="whiteboard"><title>화이트보드 · 아이디어 ${p.ideas.length}개</title>
     ${wallRectY(x0 - 0.08, x1 + 0.08, z0 - 5, z1 + 5, '#9aa1ab', OUTLINE)}
     ${wallRectY(x0, x1, z0, z1, '#ffffff')}
     ${wallRectY(x0 + 0.3, x1 - 0.3, z0 - 9, z0 - 5, '#6b7280')}
-    ${wallTextY(x0 + 0.15, z1 - 14, '💡 핵심 아이디어', 9, '#6b7280')}
-    ${lines.map((l, i) => wallTextY(x0 + 0.15, z1 - 30 - i * 15, l, 11.5, '#1e3a8a', 700)).join('')}
-    ${p.ideas.length > 1 ? wallTextY(x1 - 0.55, z0 + 4, `+${p.ideas.length - 1}`, 9, '#6b7280') : ''}
+    ${notes || wallRectY(x0 + 0.4, x0 + 1.4, z1 - 30, z1 - 28, '#cbd5e1') + wallRectY(x0 + 0.4, x0 + 1.0, z1 - 38, z1 - 36, '#cbd5e1')}
   </g>`;
 }
 
@@ -110,6 +116,34 @@ function deskSVG(m, lit, aiCount) {
     ${box(3.95, 4.15, 0, 0.6, 0.55, 16, shade(m.color, -0.1))}`;
 }
 
+// 모든 기록의 키워드 → 어울리는 물품을 책상·바닥·벽의 빈자리에 놓는다 (글 대신 물품)
+function decorPlacement(p) {
+  const objects = [];
+  const walls = [];
+  const usedWall = new Set();
+  let desk = 0, floor = 0;
+  p.decor.forEach(g => {
+    const d = g.decor;
+    const tip = `<title>${esc(d.name)} · ${esc(g.words.slice(0, 5).join(', '))} (기록 ${g.count}개)</title>`;
+    const wrap = svg => `<g class="zone prop decor" data-zone="decor:${d.id}">${tip}${svg}</g>`;
+    if (d.place === 'desk' && desk < DESK_SLOTS.length) {
+      const s = DESK_SLOTS[desk];
+      objects.push({ key: 7.61 + desk * 0.01, svg: wrap(d.draw(s.x, s.y, DESK_Z)) }); // 책상 다음에 그려야 위에 놓인다
+      desk++;
+    } else if (d.place === 'floor' && floor < FLOOR_SLOTS.length) {
+      const s = FLOOR_SLOTS[floor++];
+      objects.push({ key: s.x + s.y, svg: wrap(d.draw(s.x, s.y)) });
+    } else if (d.place === 'wall' && !usedWall.has(d.wall)) {
+      usedWall.add(d.wall);
+      walls.push(wrap(d.draw()));
+    }
+  });
+  if (p.talks.length) {
+    objects.push({ key: MIC_SPOT.x + MIC_SPOT.y, svg: `<g class="zone prop decor" data-zone="talk"><title>마이크 · 회의 발언 ${p.talks.length}개</title>${micStand(MIC_SPOT.x, MIC_SPOT.y, p.talks.length)}</g>` });
+  }
+  return { objects, walls };
+}
+
 function roomHTML(memberId, { mini = false } = {}) {
   const m = member(memberId);
   const p = profile(memberId);
@@ -117,21 +151,14 @@ function roomHTML(memberId, { mini = false } = {}) {
   const lit = dark === 0;
   const c = roomColors(m);
 
+  const decor = decorPlacement(p);
   const objects = [
     { key: 5.3, svg: shelfSVG(p.links) },
     { key: 7.6, svg: deskSVG(m, lit, p.ais.length) },
     { key: 7.0, svg: palm(0.6, 6.4, 0.9) },
-    { key: 10.8, svg: avatar(5.9, 4.9, m, { tag: !mini, bubble: !mini && p.themes[0] ? p.themes[0].theme.emoji : '' }) },
+    ...decor.objects, // 회의에서 한 말 → 마이크 스탠드와 어울리는 사물
+    { key: 10.8, svg: avatar(5.9, 4.9, m, { tag: !mini }) },
   ];
-  p.themes.slice(0, PROP_SLOTS.length).forEach(({ theme, score }, i) => {
-    const s = PROP_SLOTS[i];
-    const size = 24 + Math.min(score, 4) * 5;
-    objects.push({
-      key: s.x + s.y,
-      svg: emojiProp(s.x, s.y, theme.emoji + (score >= 3 ? theme.extra : ''), size,
-        { attrs: `class="zone prop" data-zone="theme:${theme.id}"`, title: `${theme.name} (${score})` }),
-    });
-  });
 
   const scene = [
     floorTiles(ROOM_W, ROOM_D, c.floorA, c.floorB),
@@ -143,6 +170,7 @@ function roomHTML(memberId, { mini = false } = {}) {
     }),
     whiteboardSVG(p),
     corkSVG(p.memos),
+    decor.walls.join(''),
     flat(2.2, 4.2, 3.8, 2.3, mix(m.color, '#ffffff', 0.45), 'opacity=".85" stroke="#fff" stroke-opacity=".6" stroke-width="2"'),
     depthSorted(objects),
   ].join('');
@@ -162,7 +190,13 @@ function zoneItems(memberId, zone) {
   if (zone === 'shelf') return { title: '📚 책장 · 참고 자료', items: p.links };
   if (zone === 'board') return { title: '🗒️ 포스트잇 보드 · 메모', items: p.memos };
   if (zone === 'whiteboard') return { title: '💡 화이트보드 · 아이디어', items: p.ideas };
+  if (zone === 'talk') return { title: '🎙️ 마이크 · 회의에서 한 말', items: p.talks };
   if (zone === 'monitor') return { title: '🖥️ 모니터 · AI 대화', items: p.ais, empty: 'AI 대화가 없어요. "내 방에 담기"에서 AI 대화를 붙여넣거나, 내보낸 대화 파일을 불러올 수 있어요.' };
+  if (zone.startsWith('decor:')) {
+    const g = p.decor.find(x => x.decor.id === zone.slice(6));
+    if (!g) return { title: '', items: [] };
+    return { title: `${g.decor.name} · ${g.words.slice(0, 6).join(', ')}`, items: [...g.items].sort((a, b) => b.createdAt - a.createdAt) };
+  }
   if (zone.startsWith('theme:')) {
     const theme = THEME_BY_ID[zone.slice(6)];
     return { title: `${theme.emoji} ${theme.name} 관련 자료`, items: p.items.filter(i => i.themes.includes(theme.id)) };

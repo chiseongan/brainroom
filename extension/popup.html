@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 300px; margin: 0; padding: 14px; font: 13px/1.5 system-ui, 'Malgun Gothic', sans-serif; color: #1f2330; background: #f6f3ee; }
+    h1 { font-size: 15px; margin: 0 0 6px; }
+    p { margin: 6px 0; }
+    .muted { color: #5c616d; font-size: 12px; }
+    label { display: grid; gap: 4px; margin: 10px 0; font-weight: 600; }
+    select { font: inherit; padding: 6px; border-radius: 8px; border: 1px solid #e7e2d9; }
+    .check { display: flex; gap: 8px; align-items: center; font-weight: 400; }
+    .row { display: flex; gap: 6px; margin-top: 10px; }
+    button { font: inherit; flex: 1; padding: 8px; border-radius: 8px; border: 1px solid #e7e2d9; background: #fff; cursor: pointer; }
+    button.primary { background: #4f46e5; color: #fff; border-color: #4f46e5; }
+    ul { margin: 6px 0; padding-left: 18px; max-height: 120px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h1>🧠 BrainRoom 대화 담기</h1>
+  <p class="muted">ChatGPT·Claude·Gemini 화면 오른쪽 아래 <b>BrainRoom에 담기</b>를 누르면 그 대화만 BrainRoom 탭으로 보내요. 글을 드래그해 선택하면 그 부분만 보내요. 서버로는 보내지 않아요.</p>
+  <label>보낼 BrainRoom
+    <select id="target">
+      <option value="github">chiseongan.github.io/brainroom (배포)</option>
+      <option value="local">localhost:5173 (내 PC 개발 서버)</option>
+    </select>
+  </label>
+  <label class="check"><input type="checkbox" id="showButton"> AI 사이트에 담기 버튼 보이기</label>
+  <p><b id="count">0</b>개가 BrainRoom으로 가기를 기다리고 있어요.</p>
+  <ul id="list"></ul>
+  <div class="row">
+    <button id="clear">비우기</button>
+    <button id="open" class="primary">BrainRoom 열기</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -38,7 +38,7 @@ function timeAgo(ts) {
   return `${Math.floor(min / 1440)}일 전`;
 }
 
-const STUDENT_VIEWS = ['meeting', 'room', 'office', 'timeline', 'decisions', 'report'];
+const STUDENT_VIEWS = ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations'];
 
 function go(view, roomId = null) {
   if (isProfView() && STUDENT_VIEWS.includes(view)) {
@@ -89,6 +89,8 @@ function itemCardHTML(item, { owner = false } = {}) {
           : purposeChip(item)}
       </div>
       ${item.ai.transcript ? `<details class="transcript"><summary>원문 보기</summary><pre>${esc(item.ai.transcript)}</pre></details>` : ''}` : ''}
+    ${item.type === 'work' && item.work ? `<div class="chips"><span class="chip">${SOURCES[item.work.source]?.icon || '🛠️'} ${SOURCES[item.work.source]?.name || '작업'}</span>${item.work.ai ? '<span class="chip">🤖 AI와 함께 작성</span>' : ''}</div>` : ''}
+    ${item.type === 'talk' && item.talk?.transcript ? `<details class="transcript"><summary>내 발언 전체 (${item.talk.lineCount}줄)</summary><pre>${esc(item.talk.transcript)}</pre></details>` : ''}
     <div class="chips">
       ${item.themes.map(t => `<span class="chip">${THEME_BY_ID[t].emoji} ${THEME_BY_ID[t].name}</span>`).join('')}
       ${item.keywords.map(k => `<span class="chip ghost">#${esc(k)}</span>`).join('')}
@@ -275,8 +277,8 @@ function renderOffice() {
             <b>${esc(m.name)}</b>${m.id === state.meId ? '<span class="badge">나</span>' : ''}
             <span class="muted">${activityStatus(p)} · 기록 ${p.items.length}개</span>
           </div>
-          ${p.items[0] ? `<p class="rc-latest">💬 ${TYPE_META[p.items[0].type].icon} ${esc(trunc(p.items[0].title, 26))} <span class="muted">${timeAgo(p.items[0].createdAt)}</span></p>` : ''}
-          <div class="chips">${themeChips(p.themes, 3) || '<span class="muted">아직 탐색 주제 없음</span>'}</div>
+          <div class="decor-row">${p.decor.slice(0, 7).map(g => `<span class="decor-mini" title="${esc(g.decor.name)}">${decorThumbSVG(g.decor)}</span>`).join('')
+            || '<span class="muted sm">아직 물품 없음</span>'}</div>
         </article>`;
       }).join('')}
     </div>
@@ -322,7 +324,7 @@ function renderRoom(memberId) {
         <form id="addForm" class="card add-form">
           <h3>➕ 내 방에 담기</h3>
           <div class="seg">
-            ${Object.entries(TYPE_META).map(([type, meta], i) => `
+            ${Object.entries(TYPE_META).filter(([, meta]) => !meta.auto).map(([type, meta], i) => `
               <label><input type="radio" name="type" value="${type}" ${i === 0 ? 'checked' : ''}><span>${meta.icon} ${meta.label}</span></label>`).join('')}
           </div>
           <input name="title" required maxlength="80" placeholder="제목">
@@ -338,15 +340,12 @@ function renderRoom(memberId) {
         <div class="card visiting">👀 <b>${esc(m.name)}</b>님의 방을 구경 중이에요.<br><span class="muted">마음에 드는 자료는 회의실로 보낼 수 있어요.</span></div>`}
 
         <div class="card">
-          <h3>탐색 중인 주제</h3>
-          <div class="chips">${themeChips(p.themes, 8) || '<span class="muted">자료를 담으면 자동으로 분류돼요</span>'}</div>
-          <h3>자주 등장한 키워드</h3>
-          <div class="chips">${p.keywords.map(k => `<span class="chip ghost">#${esc(k)}</span>`).join('') || '<span class="muted">-</span>'}</div>
-        </div>
-
-        <div class="card">
-          <h3>최근 자료</h3>
-          <div class="item-list">${p.items.slice(0, 5).map(i => itemCardHTML(i)).join('') || '<p class="muted">아직 자료가 없어요.</p>'}</div>
+          <h3>🧸 방의 물품 <span class="muted sm">담은 기록의 키워드에 맞춰 생겨요. 누르면 그 기록을 봐요</span></h3>
+          <div class="decor-grid">${p.decor.slice(0, 18).map(g => `
+            <button class="decor-thumb" data-decor="${g.decor.id}" data-member="${memberId}"
+              title="${esc(g.decor.name)} · ${esc(g.words.slice(0, 4).join(', '))} (기록 ${g.count}개)" aria-label="${esc(g.decor.name)}, 기록 ${g.count}개">
+              ${decorThumbSVG(g.decor)}${g.count > 1 ? `<span class="decor-count" aria-hidden="true">${g.count}</span>` : ''}</button>`).join('')
+            || '<p class="muted sm">기록을 담으면 키워드에 맞는 물품이 방에 놓여요.</p>'}</div>
         </div>
       </aside>
     </div>
@@ -728,8 +727,13 @@ function render() {
   else if (state.view === 'timeline') renderTimeline();
   else if (state.view === 'decisions') renderDecisions();
   else if (state.view === 'report') renderReport();
+  else if (state.view === 'calls') renderMeetings();
+  else if (state.view === 'integrations') renderIntegrations();
   else renderMeeting();
   if (panelSpec) renderPanel();
+  if (!isProfView()) scheduleWorkSync(); // 연동 도구에서 새 작업 가져오기 (15분마다)
+  if (extPending.length) showExtPending(); // 방에 들어오기 전에 확장에서 받은 대화
+  requestAnimationFrame(fitDecorThumbs); // 물품 그림을 칸 크기에 맞게
 }
 
 // ---------- 이벤트 ----------
@@ -791,6 +795,9 @@ document.addEventListener('click', e => {
     local.items.forEach(analyze);
     return cloudCreateTeamFrom(local);
   }
+
+  const thumb = t.closest('[data-decor]');
+  if (thumb) return openPanel(thumb.dataset.member, `decor:${thumb.dataset.decor}`);
 
   const zone = t.closest('.room:not(.mini) .zone');
   if (zone) return openPanel(state.roomId || state.meId, zone.dataset.zone);

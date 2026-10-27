@@ -45,7 +45,7 @@ service cloud.firestore {
     match /teams/{t} {
       allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
       allow read: if isMember(t) || isProf(t);
-      allow update: if isMember(t) && onlyKeys(['teamName', 'course', 'members', 'decisionDismissed']);
+      allow update: if isMember(t) && onlyKeys(['teamName', 'course', 'members', 'decisionDismissed', 'links']);
       allow delete: if isOwner(t);
 
       // 초대 코드: 팀원 코드는 팀원이, 교수자 코드는 팀장만 읽는다
@@ -123,6 +123,27 @@ service cloud.firestore {
       match /logs/{id} {
         allow read: if isMember(t) || isProf(t);
         allow create: if isMember(t);
+      }
+
+      // 음성·화상 회의: 방 팀원만. 녹취 한 줄은 말한 본인만 쓸 수 있다
+      match /calls/{c} {
+        allow read: if isMember(t);
+        allow create: if isMember(t) && request.resource.data.startedBy == request.auth.uid;
+        allow update: if isMember(t) && onlyKeys(['status', 'endedAt', 'summary', 'attendees', 'lineCount']);
+
+        match /peers/{uid} {
+          allow read: if isMember(t);
+          allow create, update: if isMember(t) && request.auth.uid == uid;
+        }
+        // 연결 정보: 보낸 사람이 만들고, 받는 사람만 읽고 지운다
+        match /signals/{s} {
+          allow create: if isMember(t) && request.resource.data.from == request.auth.uid;
+          allow read, delete: if isMember(t) && resource.data.to == request.auth.uid;
+        }
+        match /lines/{l} {
+          allow read: if isMember(t);
+          allow create: if isMember(t) && request.resource.data.uid == request.auth.uid;
+        }
       }
 
       // 권한 없는 접근 시도 기록 (ONRQ-5): 누구나 남길 수 있고 팀장만 읽는다

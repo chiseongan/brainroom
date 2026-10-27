@@ -7,6 +7,8 @@ const TYPE_META = {
   memo: { icon: '🗒️', label: '메모', place: '포스트잇 보드' },
   idea: { icon: '💡', label: '아이디어', place: '화이트보드' },
   ai: { icon: '🖥️', label: 'AI 대화', place: '모니터' },
+  talk: { icon: '🎙️', label: '회의 발언', place: '마이크', auto: true }, // 회의가 끝나면 자동으로 생김 (직접 추가 X)
+  work: { icon: '🛠️', label: '작업 기록', place: '작업', auto: true }, // GitHub·Figma·Notion에서 가져옴 (js/integrations.js)
 };
 
 let state = null;
@@ -27,6 +29,7 @@ function loadState() {
 // 예전 버전 워크스페이스에 새 필드를 채운다. 공유 범위가 없던 기록은 원래 팀에 공유되던 것이라 '팀'으로 둔다.
 function migrate(ws) {
   ws.course ??= '';
+  ws.links ??= {}; // 방 공용 연동 대상 { github: '팀/저장소', figma: [파일 키], notion: [페이지 id] }
   ws.viewer ??= 'student';
   for (const key of ['decisions', 'decisionDismissed', 'quests', 'corrections', 'changeLog', 'accessLog']) ws[key] ??= [];
   ws.items.forEach(i => {
@@ -138,6 +141,11 @@ function profile(memberId) {
     memos: items.filter(i => i.type === 'memo'),
     ideas,
     ais: items.filter(i => i.type === 'ai'),
+    talks: items.filter(i => i.type === 'talk'),
+    talkKeywords: typeof roomTalkKeywords === 'function' ? roomTalkKeywords(items.filter(i => i.type === 'talk'), 8, true) : [],
+    works: items.filter(i => i.type === 'work'),
+    // 방에 놓을 물품: 모든 기록의 키워드·주제 → 물품 (js/decor.js)
+    decor: typeof roomDecorGroups === 'function' ? roomDecorGroups(items) : [],
     pinned: ideas.find(i => i.id === m?.pinnedIdeaId) || ideas[0] || null,
     last: items[0]?.createdAt ?? 0,
   };

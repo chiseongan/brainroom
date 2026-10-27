@@ -244,6 +244,7 @@ function renderReport() {
         const hidden = c.total - visible.length;
         return `
         <article class="card report-card" style="--mc:${m.color}">
+          <p class="sm integ-line">${Object.entries(SOURCES).map(([k, s]) => `${s.icon} ${s.name} ${connectionBadge(m.connections?.[k])}`).join(' ')}</p>
           <header><h2><i class="dot"></i>${esc(m.name)}${m.id === state.meId ? ' <span class="badge">나</span>' : ''}</h2>
             <span class="muted sm">${activityStatus(profile(m.id))}</span></header>
           ${c.total ? '' : `<p class="notice">ℹ️ ${NO_RECORD_NOTE}</p>`}
@@ -285,7 +286,7 @@ function renderReport() {
 
 function openCorrectionModal() {
   const mine = state.items.filter(i => i.memberId === state.meId);
-  const typeOpts = Object.entries(TYPE_META).map(([k, v]) => `<option value="${k}">${v.icon} ${v.label}</option>`).join('');
+  const typeOpts = Object.entries(TYPE_META).filter(([, v]) => !v.auto).map(([k, v]) => `<option value="${k}">${v.icon} ${v.label}</option>`).join('');
   openModal(`
     <h2>✏️ 기여 보정 요청</h2>
     <p class="muted">내 기록이 빠졌거나 잘못 분류됐을 때 요청하세요. 다른 팀원 한 명이 확인하면 반영되고 이력이 남아요.</p>
@@ -376,7 +377,7 @@ function renderAiImportModal() {
         <input type="checkbox" data-ai-idx="${idx}" ${dup ? 'disabled' : ''}>
         <span><b>${esc(c.title)}</b>
           <span class="muted sm">${esc(c.tool)} · ${fmtDate(c.createdAt, false)} · 메시지 ${c.messageCount}개${dup ? ' · 이미 담김' : ''}</span>
-          <span class="sm ai-prev">${esc(trunc(c.firstPrompt.replace(/\s+/g, ' '), 90))}</span></span>
+          <span class="sm ai-prev">${esc(trunc(maskPII(c.firstPrompt).replace(/\s+/g, ' '), 90))}</span></span>
       </label>`;
     }).join('')}</div>
     ${aiImport.length > shown.length ? `<p class="muted sm">최근 ${shown.length}개만 표시했어요 (전체 ${aiImport.length}개).</p>` : ''}
@@ -393,6 +394,7 @@ function importSelectedAi() {
   const visibility = $('#aiVis').value;
   picked.forEach(c => addItem({
     memberId: state.meId, type: 'ai', title: c.title, content: aiSummary(c.firstPrompt), createdAt: c.createdAt, visibility,
+    url: c.url || '', // 확장으로 담은 대화는 원래 대화 주소가 근거 링크가 된다
     ai: aiFields(c),
   }));
   aiImport = null;
