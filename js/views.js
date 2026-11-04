@@ -226,6 +226,40 @@ function purposeChips(purposes) {
 
 const NO_RECORD_NOTE = '이 팀원은 아직 BrainRoom에 담은 기록이 없어요. 이 화면은 담긴 기록만 집계하므로, 기여가 없다는 뜻이 아니에요.';
 
+// 주간 요약 카드: 기본은 지난주, 화살표로 앞뒤 주를 본다
+let weeklyFrom = null;
+
+function weeklyCardHTML(ws) {
+  const thisWeek = weekStart();
+  const from = weeklyFrom ?? weekStart(thisWeek - 864e5);
+  const w = weeklySummary(ws, from);
+  const typeLine = Object.entries(w.byType).map(([t, n]) => `${TYPE_META[t]?.icon || ''} ${TYPE_META[t]?.label || t} ${n}`).join(' · ');
+  const purposeLine = Object.entries(w.purposes).map(([p, n]) => `${PURPOSE_BY_ID[p]?.label || p} ${n}`).join(' · ');
+  return `
+  <article class="card weekly-card">
+    <header class="weekly-head">
+      <h2>🗓️ 주간 요약</h2>
+      <span class="weekly-nav">
+        <button class="btn sm" data-tr="week-prev" aria-label="이전 주">◀</button>
+        <b>${weekLabel(from)}${from === thisWeek ? ' (이번 주)' : from === weekStart(thisWeek - 864e5) ? ' (지난주)' : ''}</b>
+        <button class="btn sm" data-tr="week-next" aria-label="다음 주" ${from >= thisWeek ? 'disabled' : ''}>▶</button>
+      </span>
+    </header>
+    ${w.total || w.decisions.length || w.calls.length ? `
+    <p><b>기록 ${w.total}건</b>${typeLine ? ` <span class="muted sm">${typeLine}</span>` : ''}</p>
+    <p class="sm weekly-members">${w.members.map(({ m, n }) => `<span><i class="dot" style="--mc:${esc(m.color || '#888')}"></i>${esc(m.name)} ${n}</span>`).join('')}</p>
+    ${w.keywords.length ? `<div class="chips">${w.keywords.map(k => `<span class="chip">#${esc(k)}</span>`).join('')}</div>` : ''}
+    ${purposeLine ? `<p class="sm muted">🖥️ AI 사용 목적: ${esc(purposeLine)}</p>` : ''}
+    <h3>✅ 확정한 결정 ${w.decisions.length}건</h3>
+    ${w.decisions.length ? `<ul class="src-ul">${w.decisions.map(d => `<li>${esc(d.text)}</li>`).join('')}</ul>` : '<p class="muted sm">이 주에 확정한 결정이 없어요.</p>'}
+    <h3>🎙️ 회의 ${w.calls.length}건</h3>
+    ${w.calls.length ? w.calls.map(c => `<details><summary>${esc(c.title)} <span class="muted sm">${fmtDate(c.startedAt, false)}${c.attendees?.length ? ` · ${esc(c.attendees.join(', '))}` : ''}</span></summary><pre class="call-summary">${esc(c.summary || '요약이 없어요.')}</pre></details>`).join('') : '<p class="muted sm">이 주에 끝난 회의가 없어요.</p>'}
+    ${w.quests.length ? `<h3>🎯 퀘스트</h3><ul class="src-ul">${w.quests.map(q => { const p = questProgress(q); return `<li>${esc(q.title)} <span class="muted sm">${p.done}/${p.goal}</span></li>`; }).join('')}</ul>` : ''}
+    <p class="muted sm">점수가 아니라 남은 기록의 횟수예요. ${NO_RECORD_NOTE} 키워드와 내용에 🔒 나만 기록은 들어가지 않아요.</p>`
+    : `<p class="muted">이 주에는 남은 기록이 없어요. ${NO_RECORD_NOTE}</p>`}
+  </article>`;
+}
+
 function renderReport() {
   const pending = state.corrections.filter(c => c.status === 'pending');
   app.innerHTML = `
@@ -237,6 +271,7 @@ function renderReport() {
       </div>
       <button class="btn" data-tr="corr-open">✏️ 기여 보정 요청</button>
     </div>
+    ${weeklyCardHTML(state)}
     <div class="report-grid">
       ${state.members.map(m => {
         const c = memberCounts(state, m.id);
@@ -464,6 +499,7 @@ function renderProfessor() {
     }).join('')}</div>
 
     <h2 class="prof-detail-title">${esc(sel.teamName)} 자세히</h2>
+    ${weeklyCardHTML(sel)}
     <div class="report-grid">${sel.members.map(m => {
       const c = memberCounts(sel, m.id);
       const share = st.sum ? Math.round((c.total / st.sum) * 100) : 0;
@@ -552,6 +588,12 @@ document.addEventListener('click', e => {
   const cand = () => decisionCandidates().find(c => c.key === btn.dataset.key);
   const dec = () => state.decisions.find(d => d.id === btn.dataset.dec);
 
+  if (act === 'week-prev' || act === 'week-next') {
+    const from = weeklyFrom ?? weekStart(weekStart() - 864e5);
+    // 7일을 더하고 빼지 않고 주 시작을 다시 구한다
+    weeklyFrom = act === 'week-prev' ? weekStart(from - 864e5) : weekStart(from + 8 * 864e5);
+    return render();
+  }
   if (act === 'cand-ok' || act === 'cand-edit') {
     const c = cand();
     if (!c) return;

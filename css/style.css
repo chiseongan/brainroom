@@ -651,3 +651,13 @@ details > summary { cursor: pointer; }
 .manage-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 8px; }
 .manage-actions { display: flex; gap: 6px; }
 .manage-log { max-height: 140px; overflow-y: auto; }
+
+/* 주간 요약 */
+.weekly-card { margin-bottom: 16px; }
+.weekly-card h3 { margin: 12px 0 4px; font-size: 14px; }
+.weekly-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.weekly-head h2 { margin: 0; }
+.weekly-nav { display: inline-flex; align-items: center; gap: 8px; }
+.weekly-members { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.weekly-members .dot { margin-right: 4px; }
+.invite-note { margin: 2px 0 8px; }

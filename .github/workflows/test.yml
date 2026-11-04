@@ -1,0 +1,35 @@
+name: 시험
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CHROME_PATH: google-chrome
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: 의존성 설치
+        run: |
+          npm ci --prefix worker
+          npm install --prefix tests --no-audit --no-fund
+      - name: 앱 단위 시험
+        run: npm run unit --prefix tests
+      - name: 프록시
+        run: npm run proxy --prefix tests
+      - name: Firestore 규칙
+        run: npm run rules --prefix tests
+      - name: 실제 앱 + 규칙 + WebRTC
+        run: npm run e2e --prefix tests
+      - name: Chrome 확장
+        run: npm run extension --prefix tests

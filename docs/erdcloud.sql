@@ -97,6 +97,7 @@ CREATE TABLE team_secrets (
   team_id   VARCHAR(64) NOT NULL COMMENT '방',
   kind      VARCHAR(10) NOT NULL COMMENT 'student = 팀원 초대 | prof = 교수자 초대',
   code      VARCHAR(40) NOT NULL COMMENT '초대 코드',
+  expires_at BIGINT     NULL     COMMENT '만료 시각 (7일. 없으면 만료 없는 예전 링크)',
   PRIMARY KEY (team_id, kind),
   FOREIGN KEY (team_id) REFERENCES teams (team_id)
 ) COMMENT = '초대 코드 (teams/{t}/secrets/{kind}) — 팀원 코드는 팀원, 교수자 코드는 방장만 읽음';

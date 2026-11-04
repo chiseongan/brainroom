@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 const EXT = process.argv[2];
 const chrome = spawn(process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', [
-  '--headless=new', '--disable-gpu', '--remote-debugging-pipe', '--enable-unsafe-extension-debugging',
+  '--headless=new', '--disable-gpu', '--no-sandbox', '--remote-debugging-pipe', '--enable-unsafe-extension-debugging',
   `--user-data-dir=${path.join(os.tmpdir(), 'ext2-' + Date.now())}`, '--no-first-run', 'about:blank',
 ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
 const sleep = ms => new Promise(r => setTimeout(r, ms));

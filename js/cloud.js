@@ -4,7 +4,7 @@
 // 데이터 구조 (권한은 firestore.rules가 강제)
 //   users/{uid}                     { teams: { [teamId]: { name, role } } }  내가 속한 팀 목록
 //   teams/{teamId}                  { teamName, course, ownerUid, members[], decisionDismissed[] }
-//   teams/{teamId}/secrets/{kind}   { code }  student = 팀원 초대 코드, prof = 교수자 초대 코드 (팀장만 읽음)
+//   teams/{teamId}/secrets/{kind}   { code, expiresAt }  student = 팀원 초대 코드, prof = 교수자 초대 코드 (팀장만 읽음)
 //   teams/{teamId}/members/{uid}    { uid, role, memberId, code, name, email }  역할 문서 (본인과 팀장만 읽음)
 //   teams/{teamId}/claims/{memberId} { uid, at }  명단의 팀원 한 명 = 계정 하나 (먼저 만든 계정이 그 팀원)
 //   teams/{teamId}/items/{id}       기록 내용 (공유 범위에 따라 읽기 제한)
@@ -68,6 +68,9 @@ function stableStr(v) {
   if (Array.isArray(v)) return `[${v.map(x => (x === undefined ? 'null' : stableStr(x))).join(',')}]`;
   return `{${Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => `${JSON.stringify(k)}:${stableStr(v[k])}`).join(',')}}`;
 }
+
+const INVITE_DAYS = 7;
+const newInvite = () => ({ code: randomCode(), expiresAt: Date.now() + INVITE_DAYS * 864e5 });
 
 function randomCode() {
   const bytes = crypto.getRandomValues(new Uint8Array(18));
@@ -478,8 +481,8 @@ async function cloudCreateTeamFrom(src) {
   try {
     const head = db.batch();
     head.set(ref, { ...teamFields(ws), ownerUid: authUser.uid, createdAt: Date.now() });
-    head.set(ref.collection('secrets').doc('student'), { code: randomCode() });
-    head.set(ref.collection('secrets').doc('prof'), { code: randomCode() });
+    head.set(ref.collection('secrets').doc('student'), newInvite());
+    head.set(ref.collection('secrets').doc('prof'), newInvite());
     head.set(ref.collection('members').doc(authUser.uid), { uid: authUser.uid, role: 'student', memberId: me.id, code: '', joinedAt: Date.now(), name: authUser.name || '', email: authUser.email || '' });
     head.set(ref.collection('claims').doc(me.id), { uid: authUser.uid, at: Date.now() });
     await head.commit();
@@ -655,7 +658,7 @@ async function openManageModal() {
     <ul class="manage-list">${rows}</ul>
     <p class="muted sm">내보낸 사람의 기록은 방에 남고, 그 사람은 더 이상 방을 보거나 쓸 수 없어요. 초대 링크를 함께 다시 발급하면 다시 들어올 수도 없어요.</p>
     <h3>초대 링크 다시 발급</h3>
-    <p class="muted sm">링크가 밖으로 샜을 때 쓰세요. 예전 링크는 바로 막히고, 이미 들어온 사람은 그대로예요.</p>
+    <p class="muted sm">링크는 ${INVITE_DAYS}일 동안 쓸 수 있어요. 만료됐거나 밖으로 샜을 때 다시 발급하세요. 예전 링크는 바로 막히고, 이미 들어온 사람은 그대로예요.</p>
     <div class="modal-actions" style="justify-content:flex-start">
       <button class="btn sm" data-cloud="rotate:student">팀원 링크 다시 발급</button>
       <button class="btn sm" data-cloud="rotate:prof">교수자 링크 다시 발급</button>
@@ -690,8 +693,8 @@ async function cloudKick(uid) {
 
 async function cloudRotateInvite(kind) {
   try {
-    await teamRef().collection('secrets').doc(kind).update({ code: randomCode() });
-    toast(`${kind === 'prof' ? '교수자' : '팀원'} 초대 링크를 다시 발급했어요. 예전 링크는 이제 쓸 수 없어요`);
+    await teamRef().collection('secrets').doc(kind).update(newInvite());
+    toast(`${kind === 'prof' ? '교수자' : '팀원'} 초대 링크를 다시 발급했어요. ${INVITE_DAYS}일 동안 쓸 수 있고, 예전 링크는 이제 쓸 수 없어요`);
   } catch (e) {
     writeFailed(e, '초대 링크');
   }
@@ -832,10 +835,12 @@ function myRoomsHTML() {
 function inviteSectionHTML() {
   return `
     <h3>✉️ 방 초대 링크</h3>
-    <p class="muted sm">링크를 받은 사람이 Google 로그인하면 바로 이 방에 들어와요.</p>
+    <p class="muted sm">링크를 받은 사람이 Google 로그인하면 바로 이 방에 들어와요. 이미 들어온 사람은 링크가 만료돼도 그대로예요.</p>
     <label class="sm invite">팀원 초대 링크 <span><input id="inviteStudent" readonly value="불러오는 중…"><button class="btn sm" data-cloud="copy:inviteStudent">복사</button></span></label>
+    <p class="muted sm invite-note" id="inviteStudentNote"></p>
     ${cloud.owner ? `<label class="sm invite">교수자 초대 링크 <small class="muted">(방을 만든 사람만 볼 수 있어요)</small>
-      <span><input id="inviteProf" readonly value="불러오는 중…"><button class="btn sm" data-cloud="copy:inviteProf">복사</button></span></label>` : ''}`;
+      <span><input id="inviteProf" readonly value="불러오는 중…"><button class="btn sm" data-cloud="copy:inviteProf">복사</button></span></label>
+      <p class="muted sm invite-note" id="inviteProfNote"></p>` : ''}`;
 }
 
 function openInviteModal() {
@@ -877,6 +882,16 @@ document.addEventListener('submit', e => {
   joinFromInput(new FormData(e.target).get('link'));
 });
 
+// 초대 링크가 언제까지인지 (expiresAt이 없으면 예전에 만든 링크)
+function inviteNote(expiresAt) {
+  const how = cloud.owner ? '⚙️ → 👥 방 관리에서 다시 발급하세요' : '팀장에게 새 링크를 요청하세요';
+  if (!expiresAt) return `만료 기한이 없는 예전 링크예요.${cloud.owner ? ` 다시 발급하면 ${INVITE_DAYS}일 기한이 생겨요.` : ''}`;
+  const left = expiresAt - Date.now();
+  if (left <= 0) return `⚠️ 만료된 링크예요. ${how}`;
+  const days = Math.ceil(left / 864e5);
+  return `${fmtDate(expiresAt)}까지 쓸 수 있어요 (${days}일 남음)`;
+}
+
 async function cloudFillInvites() {
   if (!cloudOn()) return;
   const link = (code, as) => `${location.origin}${location.pathname}?team=${cloud.teamId}&code=${code}${as === 'prof' ? '&as=prof' : ''}`;
@@ -886,6 +901,8 @@ async function cloudFillInvites() {
     try {
       const snap = await teamRef().collection('secrets').doc(kind).get();
       el.value = link(snap.data().code, kind);
+      const note = document.getElementById(`${elId}Note`);
+      if (note) note.textContent = inviteNote(snap.data().expiresAt);
     } catch (e) {
       el.value = '초대 링크를 불러올 수 없어요';
     }

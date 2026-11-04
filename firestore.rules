@@ -26,7 +26,11 @@ service cloud.firestore {
     function tearingDown(t) { return isOwner(t) && get(teamPath(t)).data.get('deleting', false) == true; }
     function onlyKeys(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
     function changed(key) { return request.resource.data.diff(resource.data).affectedKeys().hasAny([key]); }
-    function secretCode(t, kind) { return get(/databases/$(database)/documents/teams/$(t)/secrets/$(kind)).data.code; }
+    // 초대 코드가 맞고 만료 전인지 (expiresAt이 없는 예전 방의 링크는 다시 발급하기 전까지 만료되지 않는다)
+    function validInvite(t, kind, code) {
+      let s = get(/databases/$(database)/documents/teams/$(t)/secrets/$(kind)).data;
+      return s.code == code && (s.get('expiresAt', null) == null || request.time.toMillis() < s.expiresAt);
+    }
     function str(v, max) { return v is string && v.size() <= max; }
     function ownsClaimAfter(t, m) { return getAfter(claimPath(t, m)).data.uid == request.auth.uid; }
 
@@ -80,11 +84,13 @@ service cloud.firestore {
         || (isOwner(t) && onlyKeys(['deleting']));
       allow delete: if isOwner(t);
 
-      // 초대 코드: 팀원 코드는 팀원이, 교수자 코드는 팀장만 읽는다. 다시 발급(옛 링크 무효)은 팀장만
+      // 초대 코드: 팀원 코드는 팀원이, 교수자 코드는 팀장만 읽는다. 다시 발급(옛 링크 무효, 기간 새로)은 팀장만
       match /secrets/{kind} {
         allow create: if signedIn() && getAfter(teamPath(t)).data.ownerUid == request.auth.uid;
         allow read: if (kind == 'student' && isMember(t)) || (kind == 'prof' && isOwner(t));
-        allow update: if isOwner(t) && onlyKeys(['code']) && str(request.resource.data.code, 100) && request.resource.data.code.size() >= 16;
+        allow update: if isOwner(t) && onlyKeys(['code', 'expiresAt'])
+          && str(request.resource.data.code, 100) && request.resource.data.code.size() >= 16
+          && request.resource.data.get('expiresAt', 0) <= request.time.toMillis() + 31 * 24 * 60 * 60 * 1000;
         allow delete: if tearingDown(t);
       }
 
@@ -113,7 +119,7 @@ service cloud.firestore {
             // 초대 링크로 참여: 역할에 맞는 코드가 있어야 하고, 팀원 연결은 나중에 한다
             || (request.resource.data.role in ['student', 'prof']
                 && request.resource.data.memberId == null
-                && request.resource.data.code == secretCode(t, request.resource.data.role))
+                && validInvite(t, request.resource.data.role, request.resource.data.code))
           );
         // 명단에서 자기 팀원을 고르는 것은 한 번만, 그리고 그 팀원의 claim을 같은 배치에서 차지해야 한다
         allow update: if signedIn() && request.auth.uid == uid

@@ -24,7 +24,7 @@ const ok = (c, m) => {
   Object.entries(frames).forEach(([u, f]) => { const errs = f.contentWindow?.__errors || []; const warns = f.contentWindow?.__warns || []; if (errs.length || warns.length) say(`     [${u}] ${errs.slice(-4).join(' | ').replace(/\s+/g, ' ').slice(0, 900)} // 경고: ${warns.slice(-3).join(' | ').replace(/\s+/g, ' ').slice(0, 400)}`); });
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function until(fn, ms = 10000) {
+async function until(fn, ms = 20000) {
   const t = Date.now();
   while (Date.now() - t < ms) {
     try { const v = await fn(); if (v) return v; } catch (e) { /* 아직 */ }
@@ -215,6 +215,27 @@ async function scenarioRoom() {
   await until(() => A.eval(`state.items.some(i => i.title === '방 이동 중 갱신')`));
   ok(A.eval(`state.view === 'room'`), '다른 팀원이 기록을 남겨도 보던 방이 유지됨');
 
+  // 주간 요약: 이번 주 기록이 팀에게, 걸러서 교수자에게
+  B.eval(`weeklyFrom = weekStart(); go('report')`);
+  await until(() => B.document.querySelector('.weekly-card'));
+  const wkB = B.document.querySelector('.weekly-card').textContent;
+  ok(/기록 \d+건/.test(wkB) && wkB.includes('주제는 다회용기') && wkB.includes('이번 주'), '주간 요약: 기록·확정한 결정이 팀에게 보임');
+  ok(!wkB.includes('비밀 내용') && !wkB.includes('나만 보는 메모'), '주간 요약: 다른 사람의 나만 기록 내용은 없음');
+  A.eval(`weeklyFrom = weekStart(); go('report')`);
+  await until(() => A.document.querySelector('.weekly-card'));
+  ok(!A.document.querySelector('.weekly-card').textContent.includes('나만 보는 메모'), '주간 요약: 내 화면에도 내 나만 기록 제목은 안 나옴');
+  B.document.querySelector('[data-tr="week-prev"]').click();
+  await until(() => B.document.querySelector('.weekly-card')?.textContent.includes('지난주'));
+  ok(B.document.querySelector('.weekly-card').textContent.includes('지난주') && B.document.querySelector('.weekly-card').textContent.includes('남은 기록이 없어요'), '주간 요약: 이전 주로 이동');
+  B.document.querySelector('[data-tr="week-next"]').click();
+  await until(() => B.document.querySelector('.weekly-card')?.textContent.includes('이번 주'));
+  ok(B.document.querySelector('[data-tr="week-next"]').disabled, '주간 요약: 이번 주 다음으로는 못 감');
+  P.eval(`weeklyFrom = weekStart(); render()`);
+  await until(() => P.document.querySelector('.weekly-card'));
+  const wkP = P.document.querySelector('.weekly-card').textContent;
+  ok(/기록 4건/.test(wkP) && wkP.includes('주제는 다회용기'), '주간 요약: 교수자도 횟수·결정을 봄');
+  ok(!wkP.includes('비밀 내용') && !wkP.includes('나만 보는 메모') && !wkP.includes('다회용기 순환 서비스'), '주간 요약: 교수자에게 팀 기록 내용은 안 보임');
+
   // 화면 전부 돌려 보기 (예외가 없는지)
   for (const v of ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations']) {
     A.eval(`go('${v}')`); B.eval(`go('${v}')`);
@@ -345,9 +366,24 @@ async function scenarioManage({ A, B, C, P, X, T, mB, mC }) {
   await until(async () => (await invite(A, 'student')) !== oldLink);
   const newLink = await invite(A, 'student');
   ok(newLink !== oldLink, '초대 링크 다시 발급');
+  const sec = await getDoc(`teams/${T}/secrets/student`);
+  ok(sec.expiresAt > Date.now() + 6 * 864e5 && sec.expiresAt < Date.now() + 8 * 864e5, '다시 발급한 링크는 7일 기한');
   const viaOld = await X.eval(`joinFromInput(${JSON.stringify(oldLink)}).then(() => cloud.teamId)`);
   ok(!viaOld && !(await getDoc(`teams/${T}/members/uX`)), '옛 링크로는 못 들어옴');
   X.__errors.length = 0;
+
+  // 만료된 링크
+  await setDoc(`teams/${T}/secrets/student`, { code: new URL(newLink).searchParams.get('code'), expiresAt: Date.now() - 1000 });
+  const viaExpired = await X.eval(`joinFromInput(${JSON.stringify(newLink)}).then(() => cloud.teamId)`);
+  ok(!viaExpired && !(await getDoc(`teams/${T}/members/uX`)) && toastText(X).includes('만료'), '만료된 링크로는 못 들어오고 안내가 나옴');
+  X.__errors.length = 0;
+  ok(B.eval(`inviteNote(Date.now() - 1000)`).includes('팀장에게') && A.eval(`inviteNote(Date.now() - 1000)`).includes('다시 발급'), '만료 안내: 팀원과 팀장에게 각각 알맞게');
+  ok(A.eval(`inviteNote(Date.now() + 3 * 864e5 - 1000)`).includes('3일 남음'), '남은 기한 표시');
+  A.eval(`openInviteModal()`);
+  await until(() => A.document.getElementById('inviteStudentNote')?.textContent.includes('만료된 링크'));
+  ok(A.document.getElementById('inviteStudentNote').textContent.includes('만료된 링크'), '초대 창에 만료 표시');
+  A.eval('closeModal()');
+  await setDoc(`teams/${T}/secrets/student`, { code: new URL(newLink).searchParams.get('code'), expiresAt: Date.now() + 7 * 864e5 });
 
   // 내보내기: C와 교수자
   await A.eval(`cloudKick('uC')`);

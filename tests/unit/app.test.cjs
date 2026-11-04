@@ -21,7 +21,7 @@ function makeApp(fakeFetch, names = ['안치성', '김단유', '박채연']) {
     function render() {} function toast() {} function esc(s) { return String(s); } function fmtDate() { return ''; } function trunc(s) { return s; }
     state = newWorkspace('t', ${JSON.stringify(names)}); state.meId = state.members[0].id;
     globalThis.T = { get state() { return state; }, parseTranscript, guessMember, figmaTextFromDocument, coreKeywords, upsertWork, deleteItem, roomDecorGroups,
-      syncGithub, syncFigma, syncNotion, decorFor, workKeywords, itemDecorIds, detectThemes, extractKeywords, addItem, decisionCandidates, DECISION_PATTERN, maskPII };`, ctx);
+      syncGithub, syncFigma, syncNotion, decorFor, workKeywords, itemDecorIds, detectThemes, extractKeywords, addItem, decisionCandidates, DECISION_PATTERN, maskPII, weeklySummary, weekStart, sanitizeForProf };`, ctx);
   return ctx.T;
 }
 const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / ');
@@ -119,6 +119,50 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
   ok(ids.includes('safe') && ids.includes('phone'), 'Figma 키워드 → 금고(로그인)·휴대폰(모바일)');
   ok(ids.includes('podium') && ids.includes('piggy') && ids.includes('calendar'), 'Notion 제목 → 연단(발표)·저금통(예산)·달력(일정)');
   ok(!F.state.items.some(i => i.type === 'work' && (i.keywords.includes('페이지') || i.keywords.includes('수정'))), '안내 문구는 키워드가 안 됨');
+
+  console.log('--- 주간 요약');
+  {
+    const W = makeApp(null, ['가', '나']);
+    const ws = W.weekStart(Date.UTC(2026, 9, 28));
+    const [m1, m2] = W.state.members.map(m => m.id);
+    const base = { title: 't', content: '', url: '', votes: [], table: null, themes: [] };
+    const ws0 = {
+      members: W.state.members,
+      items: [
+        { ...base, id: 'i1', memberId: m1, type: 'memo', visibility: 'team', createdAt: ws + 1000, keywords: ['다회용기', 'GPT'] },
+        { ...base, id: 'i2', memberId: m1, type: 'memo', visibility: 'me', createdAt: ws + 2000, keywords: ['비밀주제'] },
+        { ...base, id: 'i3', memberId: m2, type: 'ai', visibility: 'prof', createdAt: ws + 3000, keywords: ['설문'], ai: { tool: 'x', purpose: 'code', transcript: '' } },
+        { ...base, id: 'old', memberId: m2, type: 'memo', visibility: 'team', createdAt: ws - 1000, keywords: ['지난주'] },
+        { ...base, id: 'next', memberId: m2, type: 'memo', visibility: 'team', createdAt: ws + 7 * 864e5, keywords: ['다음주'] },
+      ],
+      decisions: [
+        { id: 'd1', text: '근거 있는 결정', sourceIds: ['i1'], createdAt: ws + 5 },
+        { id: 'd2', text: '근거 없는 결정', sourceIds: ['gone'], createdAt: ws + 6 },
+        { id: 'd3', text: '다른 주 결정', sourceIds: ['i1'], createdAt: ws - 5 },
+      ],
+      calls: [
+        { id: 'c1', title: '끝난 회의', status: 'ended', startedAt: ws + 1, endedAt: ws + 2, summary: '요약' },
+        { id: 'c2', title: '진행 중', status: 'live', startedAt: ws + 1, endedAt: null },
+      ],
+      quests: [{ id: 'q', week: ws, title: 'x', target: 'any', count: 2 }, { id: 'q2', week: ws - 7 * 864e5, title: 'y', target: 'any', count: 2 }],
+    };
+    const w = T.weeklySummary(ws0, ws);
+    ok(w.total === 3, `이 주 기록만 센다 (${w.total}건, 나만 기록은 횟수에 포함)`);
+    ok(w.members[0].n === 2 && w.members[1].n === 1, '팀원별 횟수');
+    ok(JSON.stringify(w.keywords.sort()) === JSON.stringify(['다회용기', '설문'].sort()), `나만 기록·도구 이름·다른 주는 키워드에서 뺌 (${w.keywords})`);
+    ok(w.decisions.map(d => d.id).join() === 'd1', '근거 있는 이 주 결정만');
+    ok(w.calls.map(c => c.id).join() === 'c1', '끝난 회의만');
+    ok(w.quests.map(q => q.id).join() === 'q', '이 주 퀘스트만');
+    ok(w.purposes.code === 1, 'AI 사용 목적');
+    const forProf = T.weeklySummary(T.sanitizeForProf(ws0), ws);
+    ok(forProf.total === 3, '교수자도 횟수는 그대로');
+    ok(forProf.keywords.join() === '설문', `교수자: 교수자까지 기록의 키워드만 (${forProf.keywords})`);
+    ok(forProf.calls.length === 0, '교수자: 공유하지 않은 회의는 안 보임');
+    ok(forProf.quests.length === 0, '교수자: 퀘스트 없음');
+    ok(!JSON.stringify(forProf).includes('비밀주제') && !JSON.stringify(forProf).includes('다회용기'), '교수자 요약에 비공개 내용이 없음');
+    const empty = T.weeklySummary({ members: W.state.members, items: [] }, ws);
+    ok(empty.total === 0 && empty.decisions.length === 0, '기록이 없는 주');
+  }
 
   // ---------- 결정 추출 품질 (SSRD LS-7: 80% 이상) ----------
   // 직접 쓴 회의체 문장으로 잰 값이다. SSRD가 요구하는 '실제 회의 5건' 측정은 tests/data/ 에 녹취를 넣어 같은 방식으로 한다.

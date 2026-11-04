@@ -303,6 +303,40 @@ function teamStats(ws) {
   };
 }
 
+// ---------- 주간 요약 ----------
+// 저장하지 않고 보는 사람이 가진 데이터에서 계산한다 → 교수자는 걸러진 데이터로, 권한이 그대로 지켜진다.
+// 횟수는 '나만' 기록도 세지만(리포트와 같음) 키워드에는 넣지 않아, 내 화면에서도 내 나만 기록이 요약에 드러나지 않는다.
+function weeklySummary(ws, from) {
+  const to = from + 7 * 864e5;
+  const inWeek = ts => ts >= from && ts < to;
+  const items = ws.items.filter(i => inWeek(i.createdAt));
+  const byType = {};
+  const purposes = {};
+  items.forEach(i => {
+    byType[i.type] = (byType[i.type] || 0) + 1;
+    if (i.type === 'ai') purposes[i.ai?.purpose || 'etc'] = (purposes[i.ai?.purpose || 'etc'] || 0) + 1;
+  });
+  const members = ws.members.map(m => ({ m, n: items.filter(i => i.memberId === m.id).length }));
+  const words = new Map();
+  items.filter(i => i.visibility !== 'me' && !i._stub).forEach(i => (i.keywords || []).forEach(k => {
+    if (typeof isAiToolWord === 'function' && isAiToolWord(k)) return; // 도구 이름은 주제가 아니다
+    words.set(k, (words.get(k) || 0) + 1);
+  }));
+  const ids = new Set(ws.items.map(i => i.id));
+  return {
+    from,
+    total: items.length,
+    byType,
+    purposes,
+    members,
+    keywords: [...words.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k]) => k),
+    // 근거가 살아 있는 결정만 (ONRQ-2)
+    decisions: (ws.decisions || []).filter(d => inWeek(d.createdAt) && d.sourceIds.some(id => ids.has(id))).sort((a, b) => a.createdAt - b.createdAt),
+    calls: (ws.calls || []).filter(c => c.status !== 'live' && inWeek(c.endedAt || c.startedAt)).sort((a, b) => a.startedAt - b.startedAt),
+    quests: (ws.quests || []).filter(q => q.week === from),
+  };
+}
+
 // ---------- 교수자 보기용 데이터 (ONRQ-5, RQ-6) ----------
 
 const PROF_KEY = 'brainroom:prof-teams';

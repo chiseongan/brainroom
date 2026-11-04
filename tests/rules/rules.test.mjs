@@ -184,10 +184,19 @@ await allow('팀장은 회의를 지운다', deleteDoc(p(owner(), '/calls/c1')))
 await seed();
 await deny('팀원은 초대 코드를 바꿀 수 없다', updateDoc(p(amy(), '/secrets/student'), { code: 'new-code-1234567890' }));
 await deny('짧은 코드로 바꿀 수 없다', updateDoc(p(owner(), '/secrets/student'), { code: 'short' }));
-await allow('팀장이 초대 코드를 다시 발급', updateDoc(p(owner(), '/secrets/student'), { code: 'new-code-1234567890' }));
+await deny('만료 기한을 31일 넘게 잡을 수 없다', updateDoc(p(owner(), '/secrets/student'), { code: 'new-code-1234567890', expiresAt: Date.now() + 32 * 864e5 }));
+await deny('팀원은 만료 기한을 늘릴 수 없다', updateDoc(p(amy(), '/secrets/student'), { expiresAt: Date.now() + 864e5 }));
+await allow('만료 기한이 없는 예전 링크로 참여', setDoc(p(as('uOld'), '/members/uOld'), { uid: 'uOld', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1 }));
+await allow('만료되게 설정 (시험용)', updateDoc(p(owner(), '/secrets/student'), { expiresAt: Date.now() - 1000 }));
+await deny('만료된 링크로는 참여 불가', setDoc(p(as('uLate'), '/members/uLate'), { uid: 'uLate', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1 }));
+await allow('이미 들어온 사람은 만료 뒤에도 그대로', getDoc(doc(as('uOld'), `teams/${T}`)));
+await allow('기한 안의 링크로 참여', updateDoc(p(owner(), '/secrets/student'), { expiresAt: Date.now() + 7 * 864e5 }));
+await allow('기한이 남으면 참여 가능', setDoc(p(as('uLate'), '/members/uLate'), { uid: 'uLate', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1 }));
+await allow('팀장이 초대 코드를 다시 발급', updateDoc(p(owner(), '/secrets/student'), { code: 'new-code-1234567890', expiresAt: Date.now() + 7 * 864e5 }));
 await deny('옛 초대 코드로는 참여 불가', setDoc(p(stranger(), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1 }));
 await allow('새 코드로 참여', setDoc(p(stranger(), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: null, code: 'new-code-1234567890', joinedAt: 1 }));
 
+await deny('다시 발급해도 교수자 코드는 팀원이 못 읽는다', getDoc(p(amy(), '/secrets/prof')));
 await deny('팀원은 역할 목록을 볼 수 없다', getDocs(collection(amy(), `teams/${T}/members`)));
 await allow('팀장은 역할 목록을 본다', getDocs(collection(owner(), `teams/${T}/members`)));
 await deny('팀원은 다른 팀원을 내보낼 수 없다', deleteDoc(p(amy(), '/members/uBen')));
