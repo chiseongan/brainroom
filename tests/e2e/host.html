@@ -183,7 +183,9 @@ async function scenarioRoom() {
   await until(async () => (await list(`teams/${T}/items`)).some(i => i.correctionId === 'corr1'));
   const added = (await list(`teams/${T}/items`)).find(i => i.correctionId === 'corr1');
   ok(added?.memberId === mB && added?.ownerUid === 'uB', '보정으로 빠진 기여가 요청자 이름으로 추가');
-  ok((await list(`teams/${T}/logs`)).length === 1, '변경 이력 저장');
+  await until(async () => (await list(`teams/${T}/logs`)).length === 1);
+  await sleep(500); // 이력이 두 번 쓰이지 않는지도 본다
+  ok((await list(`teams/${T}/logs`)).length === 1, '변경 이력 저장 (한 번만)');
 
   // 교수자
   const profLink = await invite(A, 'prof');
