@@ -391,8 +391,11 @@ function cloudPush() {
     if (str === prev) return;
     cloud.synced.items[item.id] = str;
     if (item.ownerUid === me || prev === undefined) {
-      t.collection('items').doc(item.id).set(doc).catch(writeFailed);
-      t.collection('itemMeta').doc(item.id).set(metaDoc(item)).catch(writeFailed);
+      // 기록과 횟수 기록은 함께 저장한다 (한쪽만 남으면 교수자 집계가 어긋난다)
+      const batch = db.batch();
+      batch.set(t.collection('items').doc(item.id), doc);
+      batch.set(t.collection('itemMeta').doc(item.id), metaDoc(item));
+      batch.commit().catch(writeFailed);
       return;
     }
     // 남의 기록: 투표·테이블 위치·분류만 부분 수정
@@ -414,8 +417,10 @@ function cloudPush() {
     const old = JSON.parse(cloud.synced.items[id]);
     delete cloud.synced.items[id];
     if (old.ownerUid !== me) return;
-    t.collection('items').doc(id).delete().catch(writeFailed);
-    t.collection('itemMeta').doc(id).delete().catch(writeFailed);
+    const batch = db.batch();
+    batch.delete(t.collection('items').doc(id));
+    batch.delete(t.collection('itemMeta').doc(id));
+    batch.commit().catch(writeFailed);
   });
 
   syncCollection(t, 'decisions', state.decisions);

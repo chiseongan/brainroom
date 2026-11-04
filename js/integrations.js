@@ -608,6 +608,7 @@ async function finishOAuthIfPending() {
     const expiry = {
       refresh: res.refresh_token ? await sealToken(res.refresh_token) : null,
       expiresAt: res.expires_in ? Date.now() + res.expires_in * 1000 : null,
+      lifetime: res.expires_in ? res.expires_in * 1000 : null,
     };
     if (job.provider === 'notion') {
       conf.notion = { token: await sealToken(res.access_token), oauth: true, userId: res.user?.id || '', userName: res.user?.name || '', users: res.user?.id ? [{ id: res.user.id, name: res.user.name }] : [], ...expiry };

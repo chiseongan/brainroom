@@ -50,7 +50,7 @@
     if (!a) return;
     const url = resultTarget(a);
     if (!url) return;
-    const title = (a.querySelector('h3')?.innerText || a.innerText || a.title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const title = (a.querySelector('h3')?.textContent || a.textContent || a.title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
     if (!title) return;
     chrome.runtime.sendMessage({ type: 'search-click', engine: ENGINE, query, title, url });
   };

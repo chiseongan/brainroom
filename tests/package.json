@@ -6,7 +6,10 @@
   "scripts": {
     "rules": "firebase emulators:exec --only firestore --config ../firebase.json --project demo-brainroom \"node rules/rules.test.mjs\"",
     "e2e": "firebase emulators:exec --only firestore --config ../firebase.json --project demo-brainroom \"node e2e/run.mjs\"",
-    "unit": "node run-unit.mjs"
+    "unit": "node unit/app.test.cjs",
+    "extension": "node extension/run.mjs",
+    "proxy": "node ../worker/test/proxy.test.mjs",
+    "all": "npm run unit && npm run proxy && npm run rules && npm run e2e && npm run extension"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^6.0.0",

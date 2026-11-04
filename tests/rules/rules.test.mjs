@@ -79,7 +79,8 @@ await deny('틀린 코드로 참여 불가', setDoc(p(stranger(), '/members/uStr
 await deny('팀원 코드로 교수자가 될 수 없다', setDoc(p(stranger(), '/members/uStranger'), { uid: 'uStranger', role: 'prof', memberId: null, code: 'student-code-123456', joinedAt: 1 }));
 await deny('참여하면서 팀원 이름을 바로 고를 수 없다', setDoc(p(stranger(), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: 'mA', code: 'student-code-123456', joinedAt: 1 }));
 await deny('다른 사람의 역할 문서를 만들 수 없다', setDoc(p(stranger(), '/members/uOther'), { uid: 'uOther', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1 }));
-await allow('올바른 코드로 참여', setDoc(p(stranger(), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1, name: '신입', email: 's@x.com' }));
+await deny('역할 문서의 이메일을 속일 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1, name: '신입', email: 'prof@x.com' }));
+await allow('올바른 코드로 참여', setDoc(p(as('uStranger', 's@x.com'), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1, name: '신입', email: 's@x.com' }));
 await deny('팀원은 교수자 코드를 읽을 수 없다', getDoc(p(amy(), '/secrets/prof')));
 await deny('교수자는 팀원 코드를 읽을 수 없다', getDoc(p(prof(), '/secrets/student')));
 await allow('팀원은 팀원 코드를 읽는다', getDoc(p(amy(), '/secrets/student')));

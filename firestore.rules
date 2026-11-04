@@ -104,7 +104,8 @@ service cloud.firestore {
         allow create: if signedIn() && request.auth.uid == uid
           && request.resource.data.uid == uid
           && request.resource.data.keys().hasOnly(['uid', 'role', 'memberId', 'code', 'joinedAt', 'name', 'email'])
-          && str(request.resource.data.get('name', ''), 100) && str(request.resource.data.get('email', ''), 200)
+          && str(request.resource.data.get('name', ''), 100)
+          && request.resource.data.get('email', '') in ['', request.auth.token.get('email', '')]
           && (
             // 팀을 만든 사람 (팀 문서와 같은 배치로 생성)
             (request.resource.data.role == 'student' && getAfter(teamPath(t)).data.ownerUid == uid

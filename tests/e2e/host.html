@@ -189,8 +189,29 @@ async function scenarioRoom() {
   await until(() => P.eval('cloud.profTeams && cloud.profTeams.length === 1'));
   const pv = JSON.parse(P.eval(`JSON.stringify(cloud.profTeams[0])`));
   ok(pv.items.length === 4, '교수자: 기록 횟수는 모두 집계');
+  await until(async () => (await list(`teams/${T}/itemMeta`)).length === (await list(`teams/${T}/items`)).length);
+  ok((await list(`teams/${T}/itemMeta`)).length === (await list(`teams/${T}/items`)).length, '기록과 횟수 기록이 항상 짝을 이룸');
   ok(pv.items.filter(i => i.title).map(i => i.title).join() === '회수율 통계', '교수자: 내용은 교수자까지 기록만');
   ok(pv.members.every(m => !m.email && !m.uid), '교수자 보기에 이메일·계정 없음');
+
+  // 방 이동: 회의실의 문, 전체 보기 카드, 상단 메뉴
+  A.eval(`go('meeting')`);
+  await until(() => A.document.querySelector(`#app [data-go="room"][data-member="${mB}"]`));
+  A.document.querySelector(`#app [data-go="room"][data-member="${mB}"]`).dispatchEvent(new A.MouseEvent('click', { bubbles: true }));
+  await until(() => A.eval(`state.view === 'room' && state.roomId === '${mB}'`), 3000);
+  ok(A.eval(`state.view === 'room' && state.roomId === '${mB}'`) && A.document.querySelector('#app .room, #app svg'), '회의실의 문을 눌러 팀원 방으로 이동');
+  A.eval(`go('office')`);
+  await until(() => A.document.querySelector(`.room-card[data-member="${mC}"]`));
+  A.document.querySelector(`.room-card[data-member="${mC}"]`).click();
+  await until(() => A.eval(`state.view === 'room' && state.roomId === '${mC}'`), 3000);
+  ok(A.eval(`state.roomId === '${mC}'`), '전체 보기 카드로 이동');
+  A.document.querySelector('#nav [data-go="room"]').click();
+  await until(() => A.eval(`state.view === 'room' && (state.roomId === state.meId || !state.roomId)`), 3000);
+  ok(A.eval(`state.view === 'room' && (state.roomId === state.meId || !state.roomId)`), '상단 메뉴로 내 방 이동');
+  // 온라인 갱신이 오는 중에도 방이 유지된다
+  B.eval(`addItem({ memberId: state.meId, type: 'memo', title: '방 이동 중 갱신', content: '내용', visibility: 'team' })`);
+  await until(() => A.eval(`state.items.some(i => i.title === '방 이동 중 갱신')`));
+  ok(A.eval(`state.view === 'room'`), '다른 팀원이 기록을 남겨도 보던 방이 유지됨');
 
   // 화면 전부 돌려 보기 (예외가 없는지)
   for (const v of ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations']) {
@@ -330,8 +351,8 @@ async function scenarioManage({ A, B, C, P, X, T, mB, mC }) {
   await A.eval(`cloudKick('uC')`);
   await until(() => C.eval('cloud.teamId === null'));
   ok(C.eval('cloud.teamId === null'), '내보내면 그 사람의 방이 바로 닫힘');
-  await until(() => C.eval(`!cloud.myTeams['${T}']`));
-  ok(!(await getDoc('users/uC'))?.teams?.[T], '내보낸 사람의 방 목록에서도 사라짐');
+  await until(async () => !(await getDoc('users/uC'))?.teams?.[T]);
+  ok(!C.eval(`cloud.myTeams['${T}']`) && !(await getDoc('users/uC'))?.teams?.[T], '내보낸 사람의 방 목록에서도 사라짐');
   ok(!(await getDoc(`teams/${T}/claims/${mC}`)), '그 팀원 칸이 비워짐');
   await until(() => !A.eval(`state.members.find(m => m.id === '${mC}').uid`));
   ok(A.eval(`state.members.find(m => m.id === '${mC}').uid`) === undefined, '명단 칸은 남고 연결만 풀림');
@@ -386,7 +407,7 @@ async function scenarioManage({ A, B, C, P, X, T, mB, mC }) {
   ok(remain.length === 0, `하위 문서가 남지 않음${remain.length ? ` → ${remain.slice(0, 5).join(', ')}` : ''}`);
   await until(() => C.eval('cloud.teamId === null'));
   ok(C.eval('cloud.teamId === null'), '접속 중이던 팀원의 방도 닫힘');
-  await until(() => C.eval(`!cloud.myTeams['${T}']`));
+  await until(async () => !(await getDoc('users/uC'))?.teams?.[T]);
   ok(!(await getDoc('users/uC'))?.teams?.[T], '팀원의 방 목록에서도 정리');
   await until(() => !B.eval('cloud.teamId'));
   ok(B.eval(`cloud.showSetup`), '삭제한 사람은 방 선택 화면으로');
@@ -496,7 +517,8 @@ window.scenarioAi = async () => {
   ok(!raw.includes('ntn_oauth_secret') && !raw.includes('nr_1') && integ.notion.expiresAt > Date.now(), '토큰과 갱신 토큰 모두 암호화 저장, 만료 시각 기록');
 
   // 만료 임박 → 갱신
-  ok(W.eval(`oauthExpiring(loadInteg().notion)`) === true, '수명이 짧은 토큰은 갱신 대상');
+  ok(W.eval(`oauthExpiring(loadInteg().notion)`) === false, '받은 지 얼마 안 된 1시간짜리 토큰은 아직 갱신 안 함');
+  ok(W.eval(`oauthExpiring({ ...loadInteg().notion, expiresAt: Date.now() + 10 * 60 * 1000 })`) === true, '수명의 절반을 넘긴 토큰은 갱신 대상');
   ok(await W.eval(`refreshOAuth('notion')`) === true, '토큰 갱신 성공');
   ok(await W.eval(`openToken(loadInteg().notion.token)`) === 'ntn_refreshed' && await W.eval(`openToken(loadInteg().notion.refresh)`) === 'nr_2', '새 토큰 둘 다 바꿔 저장 (Notion은 갱신 토큰도 바뀜)');
   ok(W.eval(`oauthExpiring({ oauth: true, refresh: 'x', expiresAt: Date.now() + 80 * 864e5 })`) === false, 'Figma 90일 토큰: 만료가 멀면 갱신 안 함');
