@@ -289,20 +289,71 @@ function speechBubble(cx, cy, text) {
   </g>`;
 }
 
+// 사람 캐릭터. 옷은 팀원 색으로 알아보게 하고, 머리 모양·피부·머리색·바지는 팀원 id로 정해 늘 같은 모습이다
+const AVATAR_SKIN = ['#f6d3b3', '#efc29c', '#e3ad82', '#c98f65', '#a36f4a'];
+const AVATAR_HAIR = ['#2a211c', '#3b2a20', '#5a3b26', '#1f1d24', '#7a5233', '#4a3a55'];
+const AVATAR_PANTS = ['#2f3a52', '#3a3f4a', '#4a5f7f', '#5c5346', '#2b2f38'];
+
+function avatarLook(m) {
+  let h = 7;
+  for (const ch of String(m.id ?? m.name ?? '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return {
+    skin: AVATAR_SKIN[h % AVATAR_SKIN.length],
+    hair: AVATAR_HAIR[(h >>> 3) % AVATAR_HAIR.length],
+    pants: AVATAR_PANTS[(h >>> 6) % AVATAR_PANTS.length],
+    style: (h >>> 9) % 4,
+  };
+}
+
 function avatar(x, y, m, { bubble = '', tag = true, attrs = '' } = {}) {
-  const skin = '#f2c8a0';
-  const hair = shade(m.color, -0.55);
-  const [ex1, ey1] = iso(x - 0.06, y + 0.14, 41);
-  const [ex2, ey2] = iso(x + 0.06, y + 0.14, 41);
-  const [hx, hy] = iso(x, y, 58);
+  const { skin, hair, pants, style } = avatarLook(m);
+  const [cx, cy] = iso(x, y);
+  const shirt = m.color;
+  const sleeve = shade(shirt, -0.1);
+  const line = 'stroke="#1b1b2a" stroke-opacity=".28" stroke-width=".8"';
+  const hx = cx, hy = cy - 69;
+  const headY = cy - 54;
+
+  const leg = (lx, h) => `<rect x="${lx}" y="${cy - 26}" width="5.6" height="${h}" rx="2.4" fill="${pants}" ${line}/>`;
+  const shoe = (sx, sy) => `<ellipse cx="${sx}" cy="${sy}" rx="4.1" ry="2.3" fill="#23262e" ${line}/>`;
+  const arm = (ax, bx) => `<path d="M${ax},${cy - 40} Q${(ax + bx) / 2 + (bx - ax) * 0.6},${cy - 32} ${bx},${cy - 24}" fill="none" stroke="#1b1b2a" stroke-opacity=".25" stroke-width="5.4" stroke-linecap="round"/>
+    <path d="M${ax},${cy - 40} Q${(ax + bx) / 2 + (bx - ax) * 0.6},${cy - 32} ${bx},${cy - 24}" fill="none" stroke="${sleeve}" stroke-width="4.4" stroke-linecap="round"/>
+    <circle cx="${bx}" cy="${cy - 21.5}" r="2.4" fill="${skin}" ${line}/>`;
+  const torso = `M${cx - 9.5},${cy - 41} Q${cx},${cy - 45.5} ${cx + 9.5},${cy - 41} L${cx + 8.2},${cy - 22} Q${cx},${cy - 19.5} ${cx - 8.2},${cy - 22} Z`;
+
+  // 뒷머리 (머리보다 먼저 그린다)
+  const backHair = [
+    '',
+    `<path d="M${cx - 9.6},${headY - 3} Q${cx - 11.5},${headY + 8} ${cx - 8},${headY + 11} L${cx + 8},${headY + 11} Q${cx + 11.5},${headY + 8} ${cx + 9.6},${headY - 3} Z" fill="${hair}"/>`,
+    `<path d="M${cx - 9.8},${headY - 3} Q${cx - 12},${headY + 14} ${cx - 8},${headY + 19} L${cx + 8},${headY + 19} Q${cx + 12},${headY + 14} ${cx + 9.8},${headY - 3} Z" fill="${hair}"/>`,
+    '',
+  ][style];
+  // 앞머리
+  const frontHair = [
+    `<path d="M${cx - 9},${headY - 1} C${cx - 10},${headY - 13} ${cx + 10},${headY - 13} ${cx + 9},${headY - 1} Q${cx + 5},${headY - 6} ${cx - 2},${headY - 6} Q${cx - 6},${headY - 5} ${cx - 9},${headY - 1} Z" fill="${hair}" ${line}/>`,
+    `<path d="M${cx - 9.6},${headY + 1} C${cx - 11},${headY - 14} ${cx + 11},${headY - 14} ${cx + 9.6},${headY + 1} Q${cx + 7},${headY - 5} ${cx + 1},${headY - 6} Q${cx - 6},${headY - 6} ${cx - 9.6},${headY + 1} Z" fill="${hair}" ${line}/>`,
+    `<path d="M${cx - 9.8},${headY + 2} C${cx - 11},${headY - 14} ${cx + 11},${headY - 14} ${cx + 9.8},${headY + 2} Q${cx + 8},${headY - 4} ${cx + 3},${headY - 6.5} Q${cx - 5},${headY - 3} ${cx - 9.8},${headY + 2} Z" fill="${hair}" ${line}/>`,
+    [[-7, -5, 4], [-3, -8.5, 4.4], [2, -9, 4.4], [6.5, -6, 4], [-8.8, -1, 2.8], [8.8, -2, 2.8]].map(([dx, dy, r]) => `<circle cx="${cx + dx}" cy="${headY + dy}" r="${r}" fill="${hair}"/>`).join(''),
+  ][style];
+
   return `<g class="avatar" ${attrs}>
-    <ellipse cx="${iso(x, y)[0]}" cy="${iso(x, y)[1]}" rx="13" ry="6" fill="rgba(0,0,0,.18)"/>
-    ${box(x - 0.13, y - 0.13, 0, 0.26, 0.26, 14, '#3f4556')}
-    ${box(x - 0.17, y - 0.17, 14, 0.34, 0.34, 18, m.color)}
-    ${box(x - 0.15, y - 0.15, 32, 0.3, 0.3, 16, skin)}
-    ${box(x - 0.16, y - 0.16, 46, 0.32, 0.32, 6, hair)}
-    <rect x="${ex1 - 1.5}" y="${ey1 - 2}" width="3" height="3" fill="#1f2330"/>
-    <rect x="${ex2 - 1.5}" y="${ey2 - 2}" width="3" height="3" fill="#1f2330"/>
+    <ellipse cx="${cx}" cy="${cy}" rx="15" ry="7.5" fill="url(#brShadow)" opacity=".6"/>
+    ${leg(cx - 7.2, 23.5)}${leg(cx + 1.6, 24.5)}
+    ${shoe(cx - 4.6, cy - 1.5)}${shoe(cx + 4.6, cy - 0.5)}
+    ${arm(cx + 9, cx + 11.5)}
+    <path d="${torso}" fill="${shirt}" ${OUTLINE}/><path d="${torso}" fill="url(#brCyl)"/>
+    <path d="M${cx - 3.2},${cy - 43.2} Q${cx - 0.6},${cy - 39.5} ${cx + 2.2},${cy - 43.4}" fill="${skin}" stroke="#1b1b2a" stroke-opacity=".2" stroke-width=".6"/>
+    ${arm(cx - 9, cx - 11.5)}
+    ${backHair}
+    <rect x="${cx - 3}" y="${cy - 47}" width="5.4" height="5" fill="${shade(skin, -0.1)}"/>
+    <ellipse cx="${cx - 8.8}" cy="${headY + 1}" rx="1.7" ry="2.2" fill="${skin}"/><ellipse cx="${cx + 8.8}" cy="${headY + 1}" rx="1.7" ry="2.2" fill="${skin}"/>
+    <ellipse cx="${cx}" cy="${headY}" rx="8.8" ry="9.6" fill="${skin}" ${line}/>
+    <ellipse cx="${cx}" cy="${headY}" rx="8.8" ry="9.6" fill="url(#brRound)" opacity=".45"/>
+    ${frontHair}
+    <ellipse cx="${cx - 4.1}" cy="${headY + 1.2}" rx="1.25" ry="1.7" fill="#1f1d24"/><ellipse cx="${cx + 2.5}" cy="${headY + 1.2}" rx="1.25" ry="1.7" fill="#1f1d24"/>
+    <circle cx="${cx - 4.5}" cy="${headY + 0.6}" r=".45" fill="#fff"/><circle cx="${cx + 2.1}" cy="${headY + 0.6}" r=".45" fill="#fff"/>
+    <ellipse cx="${cx - 5.9}" cy="${headY + 4}" rx="1.6" ry=".9" fill="#e27d7d" opacity=".35"/><ellipse cx="${cx + 4.3}" cy="${headY + 4}" rx="1.6" ry=".9" fill="#e27d7d" opacity=".35"/>
+    <path d="M${cx - 2.6},${headY + 5} Q${cx - 0.8},${headY + 6.6} ${cx + 1},${headY + 5}" fill="none" stroke="#8a4b3c" stroke-width=".9" stroke-linecap="round"/>
     ${tag ? nameTag(hx, hy, m.name, m.color) : ''}
     ${bubble ? speechBubble(hx, hy - 18, bubble) : ''}
   </g>`;

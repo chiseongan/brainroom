@@ -18,12 +18,13 @@ function makeApp(fakeFetch, names = ['안치성', '김단유', '박채연']) {
   vm.createContext(ctx);
   vm.runInContext(['themes', 'nlp', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
     + `\n;var guestMode = false, authUser = null, cloud = { loaded: true };
-    function render() {} function toast() {} function esc(s) { return String(s); } function fmtDate() { return ''; } function trunc(s) { return s; }
+    function render() {} function toast() {} function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } function fmtDate() { return ''; } function trunc(s) { return s; }
     function hashCode(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return Math.abs(h); }
     state = newWorkspace('t', ${JSON.stringify(names)}); state.meId = state.members[0].id;
     globalThis.T = { get state() { return state; }, parseTranscript, guessMember, figmaTextFromDocument, coreKeywords, upsertWork, deleteItem, roomDecorGroups,
       syncGithub, syncFigma, syncNotion, decorFor, workKeywords, itemDecorIds, detectThemes, extractKeywords, addItem, decisionCandidates, DECISION_PATTERN, maskPII, weeklySummary, weekStart, sanitizeForProf, decorMatch, DECOR, DECOR_BY_ID, DESK_Z };`, ctx);
   vm.runInContext(fs.readFileSync(path.join(root, 'js', 'room.js'), 'utf8').replace(/function hashCode[\s\S]*?\n}\n/, '') + `\n;globalThis.T.R = { decorPlacement, roomHTML, FLOOR_SLOTS, DESK_SLOTS };`, ctx);
+  ctx.T.ctx = ctx;
   return ctx.T;
 }
 const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / ');
@@ -88,6 +89,13 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
   const dup = T.DECOR.flatMap(d => [...(d.words || []), ...(d.weak || [])].map(k => [k, d.id])).filter(([k], i, a) => a.findIndex(([x]) => x === k) !== i);
   ok(!dup.length, `같은 단어가 두 물건에 없음${dup.length ? ` → ${dup.slice(0, 5)}` : ''}`);
   ok(T.DECOR.filter(d => d.place === 'floor').every(d => ['low', 'mid', 'tall'].includes(d.height)), '바닥 물건마다 키 정보가 있음');
+
+  // 캐릭터: 같은 팀원은 늘 같은 모습, 좌표 오류 없음, 말풍선은 넘긴 글자 그대로
+  const av = (m, o) => vm.runInContext(`avatar(3, 4, ${JSON.stringify(m)}, ${JSON.stringify(o || {})})`, T.ctx);
+  ok(av({ id: 'm1', name: '가', color: '#6366f1' }) === av({ id: 'm1', name: '가', color: '#6366f1' }), '같은 팀원은 늘 같은 모습');
+  ok(['m1', 'm2', 'm3', 'm4', 'abc', 'xyz'].every(i => !/NaN|undefined/.test(av({ id: i, name: i, color: '#f97316' }, { bubble: '💡' }))), '캐릭터 그림에 잘못된 값 없음');
+  ok(new Set(['m1', 'm2', 'm3', 'm4', 'a', 'b', 'c', 'd'].map(i => av({ id: i, name: '가', color: '#000000' }))).size > 1, '팀원마다 모습이 다름');
+  ok(av({ id: 'm1', name: '<b>', color: '#000000' }).includes('&lt;b&gt;') || !av({ id: 'm1', name: '<b>', color: '#000000' }).includes('<b>'), '이름은 HTML로 해석되지 않음');
 
   // 방 배치: 키 큰 물건이 자리를 잃지 않고, 한 자리에 둘이 놓이지 않는다
   const R = T.R;
