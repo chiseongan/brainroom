@@ -1,0 +1,452 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>BrainRoom E2E</title></head>
+<body>
+<pre id="log">running…</pre>
+<div id="frames"></div>
+<script>
+// 사람마다 iframe 하나 = 실제 앱 한 벌. 시험은 앱의 함수와 버튼을 그대로 쓰고, 결과는 관리자 REST로 DB에서 직접 확인한다.
+window.USERS = {
+  uA: { uid: 'uA', name: '안치성', email: 'a@x.com' },
+  uB: { uid: 'uB', name: '김단유', email: 'b@x.com' },
+  uC: { uid: 'uC', name: '박채연', email: 'c@x.com' },
+  uP: { uid: 'uP', name: '교수님', email: 'p@x.com' },
+  uX: { uid: 'uX', name: '낯선사람', email: 'x@x.com' },
+};
+const PROXY = new URLSearchParams(location.search).get('proxy');
+const ONLY = new URLSearchParams(location.search).get('only');
+const EMU = 'http://127.0.0.1:8181/v1/projects/demo-brainroom/databases/(default)/documents';
+window.LOG = [];
+const say = s => { LOG.push(s); document.getElementById('log').textContent = LOG.join('\n'); };
+const ok = (c, m) => {
+  say(`${c ? 'PASS' : 'FAIL'} ${m}`);
+  if (c) return;
+  // 실패하면 그 순간 각 앱의 오류를 함께 보여 준다
+  Object.entries(frames).forEach(([u, f]) => { const errs = f.contentWindow?.__errors || []; if (errs.length) say(`     [${u}] ${errs.slice(-4).join(' | ').slice(0, 600)}`); });
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms = 10000) {
+  const t = Date.now();
+  while (Date.now() - t < ms) {
+    try { const v = await fn(); if (v) return v; } catch (e) { /* 아직 */ }
+    await sleep(100);
+  }
+  return false;
+}
+
+// ---------- 관리자 REST (규칙 우회, 확인 전용) ----------
+const admin = { Authorization: 'Bearer owner', 'Content-Type': 'application/json' };
+const decode = v => {
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return Number(v.integerValue);
+  if ('doubleValue' in v) return v.doubleValue;
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('nullValue' in v) return null;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(decode);
+  if ('mapValue' in v) return decodeFields(v.mapValue.fields || {});
+  return v;
+};
+const decodeFields = f => Object.fromEntries(Object.entries(f).map(([k, v]) => [k, decode(v)]));
+const encode = v => {
+  if (v === null || v === undefined) return { nullValue: null };
+  if (typeof v === 'string') return { stringValue: v };
+  if (typeof v === 'boolean') return { booleanValue: v };
+  if (typeof v === 'number') return { integerValue: String(v) };
+  if (Array.isArray(v)) return { arrayValue: { values: v.map(encode) } };
+  return { mapValue: { fields: Object.fromEntries(Object.entries(v).map(([k, x]) => [k, encode(x)])) } };
+};
+const getDoc = async p => {
+  const r = await fetch(`${EMU}/${p}`, { headers: admin });
+  return r.ok ? decodeFields((await r.json()).fields || {}) : null;
+};
+const setDoc = (p, d) => fetch(`${EMU}/${p}`, { method: 'PATCH', headers: admin, body: JSON.stringify({ fields: Object.fromEntries(Object.entries(d).map(([k, v]) => [k, encode(v)])) }) });
+const delDoc = p => fetch(`${EMU}/${p}`, { method: 'DELETE', headers: admin });
+const list = async p => {
+  const r = await fetch(`${EMU}/${p}?pageSize=500`, { headers: admin });
+  const j = r.ok ? await r.json() : {};
+  return (j.documents || []).map(d => ({ id: d.name.split('/').pop(), ...decodeFields(d.fields || {}) }));
+};
+const collections = async p => {
+  const r = await fetch(`${EMU}/${p}:listCollectionIds`, { method: 'POST', headers: admin, body: '{}' });
+  return r.ok ? (await r.json()).collectionIds || [] : [];
+};
+const wipe = () => fetch('http://127.0.0.1:8181/emulator/v1/projects/demo-brainroom/databases/(default)/documents', { method: 'DELETE', headers: admin });
+
+// ---------- 앱 한 벌 ----------
+const frames = {};
+async function open(u, { proxy = false } = {}) {
+  closeFrame(u);
+  const f = document.createElement('iframe');
+  f.allow = 'microphone; camera';
+  f.style.cssText = 'width:1000px;height:700px';
+  f.src = `/app.html?u=${u}${proxy ? `&proxy=${encodeURIComponent(PROXY)}` : ''}&t=${Date.now()}`;
+  document.getElementById('frames').appendChild(f);
+  frames[u] = f;
+  await new Promise(r => { f.onload = r; });
+  const w = f.contentWindow;
+  await until(() => w.eval('typeof authReady !== "undefined" && authReady && !cloud.busy'));
+  return w;
+}
+function closeFrame(u) { if (frames[u]) { frames[u].remove(); delete frames[u]; } }
+function closeAll() { Object.keys(frames).forEach(closeFrame); }
+
+// 규칙에 막힌 쓰기가 있었는지 (앱이 console.error로 남긴 것)
+function noDenied(w, who, allowed = []) {
+  const bad = w.__errors.filter(e => /permission|PERMISSION|exception|rejection/.test(e) && !allowed.some(a => e.includes(a)));
+  ok(!bad.length, `${who}: 앱 오류·규칙 거절 없음${bad.length ? ` → ${bad.slice(0, 3).join(' | ')}` : ''}`);
+  w.__errors.length = 0;
+}
+const toastText = w => w.document.getElementById('toasts')?.textContent || '';
+
+async function makeRoom(A, name = '호랑이양말') {
+  await A.eval(`cloudCreateTeam(${JSON.stringify(name)}, ['안치성', '김단유'], '소공')`);
+  await until(() => A.eval('cloud.loaded && state.meId'));
+  return A.eval('cloud.teamId');
+}
+const invite = (w, kind) => w.eval(`teamRef().collection('secrets').doc('${kind}').get().then(s => location.origin + '/?team=' + cloud.teamId + '&code=' + s.data().code${kind === 'prof' ? " + '&as=prof'" : ''})`);
+async function joinAs(w, link, memberName) {
+  await w.eval(`joinFromInput(${JSON.stringify(link)})`);
+  await until(() => w.eval('cloud.loaded'));
+  await until(() => w.document.querySelector('[data-claim]'));
+  const id = memberName ? w.eval(`state.members.find(m => m.name === ${JSON.stringify(memberName)}).id`) : 'new';
+  w.document.querySelector(`[data-claim="${id}"]`).click();
+  await until(() => w.eval('state.meId && cloud.roleDoc && cloud.roleDoc.memberId'));
+  await sleep(300);
+}
+
+// ---------- 시나리오 1: 방 만들기 ~ 팀원 선점 ~ 공유 범위 ----------
+async function scenarioRoom() {
+  say('\n=== 방 만들기·참여·공유 범위');
+  await wipe();
+  const A = await open('uA'), B = await open('uB'), C = await open('uC'), P = await open('uP'), X = await open('uX');
+  const T = await makeRoom(A);
+  const team = await getDoc(`teams/${T}`);
+  const mA = A.eval('state.meId');
+  ok(team?.ownerUid === 'uA', '방 만들기: 팀 문서');
+  ok((await getDoc(`teams/${T}/claims/${mA}`))?.uid === 'uA', '방 만들기: 내 팀원 칸을 선점');
+  ok((await getDoc(`teams/${T}/members/uA`))?.email === 'a@x.com', '방 만들기: 역할 문서에 이름·이메일');
+
+  const link = await invite(A, 'student');
+  await joinAs(B, link, '김단유');
+  const mB = B.eval('state.meId');
+  ok((await getDoc(`teams/${T}/claims/${mB}`))?.uid === 'uB', '초대 링크로 참여 → 빈자리 선점');
+  await until(() => A.eval(`state.members.some(m => m.uid === 'uB')`));
+  ok(A.eval(`state.members.find(m => m.uid === 'uB')?.name`) === '김단유', '다른 팀원 화면에 실시간 반영');
+
+  // C는 이미 B가 쓰는 칸을 가로챌 수 없다
+  await C.eval(`joinFromInput(${JSON.stringify(link)})`);
+  await until(() => C.eval('cloud.loaded'));
+  const stolen = await C.eval(`cloudSetMemberId('${mB}')`);
+  ok(stolen === false, '이미 쓰는 팀원 칸은 가로챌 수 없다');
+  ok((await getDoc(`teams/${T}/claims/${mB}`))?.uid === 'uB', '가로채기 뒤에도 원래 주인 그대로');
+  ok(toastText(C).includes('이미 다른 계정'), '가로채기 실패 안내');
+  C.__errors.length = 0;
+  await until(() => C.document.querySelector('[data-claim="new"]'));
+  C.document.querySelector('[data-claim="new"]').click();
+  await until(() => C.eval('cloud.roleDoc && cloud.roleDoc.memberId'));
+  const mC = C.eval('state.meId');
+  ok(mC && mC !== mB && (await getDoc(`teams/${T}/claims/${mC}`))?.uid === 'uC', '새 팀원으로 참여');
+
+  // 틀린 코드
+  const bad = await X.eval(`cloudJoin('${T}', 'wrong-code', 'student')`);
+  ok(bad === null && toastText(X).includes('초대 링크'), '틀린 초대 코드 거절 + 안내');
+  await until(async () => (await list(`teams/${T}/accessLogs`)).some(l => l.uid === 'uX'));
+  ok((await list(`teams/${T}/accessLogs`)).some(l => l.uid === 'uX' && l.email === 'x@x.com'), '막힌 접근이 기록됨 (ONRQ-5)');
+  X.__errors.length = 0;
+
+  // 공유 범위별 기록 (앱 함수 그대로)
+  A.eval(`addItem({ memberId: state.meId, type: 'memo', title: '나만 보는 메모', content: '비밀 내용', visibility: 'me' })`);
+  A.eval(`addItem({ memberId: state.meId, type: 'idea', title: '다회용기 순환 서비스', content: '캠퍼스 반납함을 쓰기로 했다', visibility: 'team' })`);
+  A.eval(`addItem({ memberId: state.meId, type: 'link', title: '회수율 통계', content: '교수자용 자료', url: 'https://example.com/a', visibility: 'prof' })`);
+  await until(async () => (await list(`teams/${T}/items`)).length === 3);
+  await until(() => B.eval(`state.items.filter(i => !i._stub).length === 2`));
+  ok(B.eval(`state.items.filter(i => !i._stub).map(i => i.title).sort().join()`) === '다회용기 순환 서비스,회수율 통계', 'B: 팀·교수자 기록만 내용이 보임');
+  ok(B.eval(`state.items.length`) === 3 && B.eval(`state.items.find(i => i._stub).title`) === '', 'B: 나만 기록은 횟수만');
+
+  // 투표·결정·퀘스트·보정: 각자 앱 경로로
+  const ideaId = B.eval(`state.items.find(i => i.type === 'idea').id`);
+  B.eval(`itemById('${ideaId}').votes.push(state.meId); saveState()`);
+  await until(async () => (await getDoc(`teams/${T}/items/${ideaId}`))?.votes?.length === 1);
+  ok((await getDoc(`teams/${T}/items/${ideaId}`)).votes[0] === mB, '다른 팀원의 기록에 투표');
+  B.eval(`addDecision({ text: '주제는 다회용기', sourceIds: ['${ideaId}'] })`);
+  B.eval(`state.quests.push({ id: uid(), week: weekStart(), title: '자료 3개', target: 'any', count: 3, done: false }); saveState()`);
+  await until(async () => (await list(`teams/${T}/decisions`)).length === 1 && (await list(`teams/${T}/quests`)).length === 1);
+  ok((await list(`teams/${T}/decisions`)).length === 1, '결정 저장');
+  // 빠진 기여 보정: B가 요청 → C가 확인
+  B.eval(`state.corrections.push({ id: 'corr1', memberId: state.meId, requesterUid: authUser.uid, kind: 'missing', note: '빠짐', status: 'pending', createdAt: Date.now(), title: '설문 작성', type: 'memo', url: '' }); saveState()`);
+  await until(() => C.eval(`state.corrections.some(c => c.id === 'corr1')`));
+  C.eval(`applyCorrection(state.corrections.find(c => c.id === 'corr1'), state.meId)`);
+  await until(async () => (await getDoc(`teams/${T}/corrections/corr1`))?.status === 'applied');
+  const corr = await getDoc(`teams/${T}/corrections/corr1`);
+  ok(corr?.confirmedBy === mC, '보정 요청 확인 (확인자 = 나)');
+  await until(async () => (await list(`teams/${T}/items`)).some(i => i.correctionId === 'corr1'));
+  const added = (await list(`teams/${T}/items`)).find(i => i.correctionId === 'corr1');
+  ok(added?.memberId === mB && added?.ownerUid === 'uB', '보정으로 빠진 기여가 요청자 이름으로 추가');
+  ok((await list(`teams/${T}/logs`)).length === 1, '변경 이력 저장');
+
+  // 교수자
+  const profLink = await invite(A, 'prof');
+  await P.eval(`joinFromInput(${JSON.stringify(profLink)})`);
+  await until(() => P.eval('cloud.profTeams && cloud.profTeams.length === 1'));
+  const pv = JSON.parse(P.eval(`JSON.stringify(cloud.profTeams[0])`));
+  ok(pv.items.length === 4, '교수자: 기록 횟수는 모두 집계');
+  ok(pv.items.filter(i => i.title).map(i => i.title).join() === '회수율 통계', '교수자: 내용은 교수자까지 기록만');
+  ok(pv.members.every(m => !m.email && !m.uid), '교수자 보기에 이메일·계정 없음');
+
+  // 화면 전부 돌려 보기 (예외가 없는지)
+  for (const v of ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations']) {
+    A.eval(`go('${v}')`); B.eval(`go('${v}')`);
+    await sleep(120);
+  }
+  A.eval(`openMenu()`); await sleep(100); A.eval(`closeModal()`);
+  await until(() => A.eval('state.online && state.online.has(state.meId)'), 4000);
+  ok(A.eval(`state.online.has('${mB}')`), '접속 중 표시 (RQ-8)');
+  noDenied(A, 'A'); noDenied(B, 'B'); noDenied(C, 'C'); noDenied(P, '교수자');
+  return { A, B, C, P, X, T, mA, mB, mC };
+}
+
+// ---------- 시나리오 2: 회의 (실제 WebRTC + 규칙) ----------
+async function scenarioCalls({ A, B, C, T, mA, mB }) {
+  say('\n=== 회의: WebRTC 연결·녹취·요약·정리');
+  A.eval(`go('calls')`); B.eval(`go('calls')`);
+  await A.eval(`startCall('주간 회의', { cam: false, stt: false })`);
+  await until(() => A.eval('call.id'));
+  const cid = A.eval('call.id');
+  await until(() => B.eval(`liveCalls().some(c => c.id === '${cid}')`));
+  await B.eval(`joinCall('${cid}', { cam: false, stt: false })`);
+  const connected = await until(() => A.eval(`call.pcs.get('uB')?.pc.connectionState === 'connected'`) && B.eval(`call.pcs.get('uA')?.pc.connectionState === 'connected'`), 20000);
+  ok(connected, '두 브라우저 음성 연결 성공 (Firestore 신호 + 실제 규칙)');
+  await until(() => A.eval(`Boolean(call.pcs.get('uB')?.stream)`), 5000);
+  ok(A.eval(`call.pcs.get('uB')?.stream?.getAudioTracks().length`) === 1, '상대 소리 트랙 도착');
+  A.eval(`saveLine('다회용기 순환 서비스를 주제로 하기로 했어요')`);
+  B.eval(`saveLine('설문은 제가 만들고 예산도 정리할게요')`);
+  B.eval(`saveLine('제 전화번호는 010-1234-5678 입니다')`);
+  await until(async () => (await list(`teams/${T}/calls/${cid}/lines`)).length === 3);
+  const ln = await list(`teams/${T}/calls/${cid}/lines`);
+  ok(ln.length === 3 && ln.every(l => !l.text.includes('010-1234')), '녹취 저장 + 개인정보 가림 (LS-4)');
+  // B 나가고 A 나감 → 마지막 사람이 끝냄
+  await B.eval('leaveCall()');
+  await until(() => A.eval(`call.peers.size === 0`), 8000);
+  await A.eval('leaveCall()');
+  await until(async () => (await getDoc(`teams/${T}/calls/${cid}`))?.summary);
+  const ended = await getDoc(`teams/${T}/calls/${cid}`);
+  ok(ended.status === 'ended' && ended.closedBy === 'uA' && ended.lineCount === 3, '마지막 사람이 나가면 회의 종료·요약');
+  ok(ended.decisions?.some(d => d.includes('하기로')), '정한 말이 회의 결정 후보로 저장');
+  ok((await list(`teams/${T}/calls/${cid}/signals`)).length === 0, '연결 정보가 DB에 남지 않음');
+  // 각자 방의 '내가 한 말'
+  await B.eval('syncMyTalks()'); await A.eval('syncMyTalks()');
+  await until(async () => (await list(`teams/${T}/items`)).filter(i => i.type === 'talk').length === 2);
+  const talks = (await list(`teams/${T}/items`)).filter(i => i.type === 'talk');
+  const talkB = talks.find(t => t.memberId === mB);
+  ok(talkB?.ownerUid === 'uB' && talkB.content.includes('설문') && !talkB.content.includes('다회용기 순환'), "B의 방: B가 한 말만 요약");
+  await until(() => B.eval(`state.items.some(i => i.type === 'talk' && i.memberId === '${mA}')`));
+  const cand = JSON.parse(B.eval(`JSON.stringify(decisionCandidates().map(c => c.text))`));
+  ok(cand.some(t => t.includes('다회용기 순환 서비스를 주제로')), `회의에서 정한 말이 결정 후보로 (RQ-9)`);
+  ok(new Set(cand).size === cand.length, '같은 말이 후보에 두 번 나오지 않음');
+
+  // 동시에 끝내기: 요약은 한 번
+  await A.eval(`startCall('동시 종료 시험', { cam: false, stt: false })`);
+  await until(() => A.eval('call.id'));
+  const c2 = A.eval('call.id');
+  await until(() => B.eval(`liveCalls().some(c => c.id === '${c2}')`));
+  const results = await Promise.all([A.eval(`endCall('${c2}')`), B.eval(`endCall('${c2}')`), C.eval(`endCall('${c2}')`)]);
+  await until(async () => (await getDoc(`teams/${T}/calls/${c2}`))?.summaryBy);
+  const c2doc = await getDoc(`teams/${T}/calls/${c2}`);
+  ok(c2doc.status === 'ended' && ['uA', 'uB', 'uC'].includes(c2doc.closedBy) && results.length === 3, '셋이 동시에 끝내도 한 사람만 처리');
+  await until(() => A.eval('!call.id'));
+  ok(A.eval('!call.id'), '회의가 끝나면 참여자는 자동으로 나감');
+
+  // 버려진 회의: 브라우저가 꺼져 '진행 중'으로 남은 회의를 다른 팀원이 정리
+  const old = Date.now() - 10 * 60 * 1000;
+  await setDoc(`teams/${T}/calls/ghost`, { id: 'ghost', title: '꺼진 회의', status: 'live', startedBy: 'uC', startedByName: '박채연', startedAt: old, endedAt: null, summary: null });
+  await setDoc(`teams/${T}/calls/ghost/peers/uC`, { uid: 'uC', name: '박채연', joinedAt: old, beat: old, leftAt: null });
+  await setDoc(`teams/${T}/calls/ghost/lines/l1`, { uid: 'uC', memberId: 'x', name: '박채연', text: '발표는 다음 주에 하기로 했어요', at: old });
+  await setDoc(`teams/${T}/calls/alive`, { id: 'alive', title: '진행 중인 회의', status: 'live', startedBy: 'uC', startedByName: '박채연', startedAt: old, endedAt: null, summary: null });
+  await setDoc(`teams/${T}/calls/alive/peers/uC`, { uid: 'uC', name: '박채연', joinedAt: old, beat: Date.now(), leftAt: null });
+  await setDoc(`teams/${T}/calls/nosum`, { id: 'nosum', title: '요약 못 한 회의', status: 'ended', startedBy: 'uC', startedByName: '박채연', startedAt: old, endedAt: old, summary: null });
+  await until(() => A.eval(`state.calls.some(c => c.id === 'ghost') && state.calls.some(c => c.id === 'alive') && state.calls.some(c => c.id === 'nosum')`));
+  await A.eval('sweepCalls()');
+  await until(async () => (await getDoc(`teams/${T}/calls/ghost`))?.summary);
+  const g = await getDoc(`teams/${T}/calls/ghost`);
+  ok(g.status === 'ended' && g.summary.includes('발표') && g.closedBy === 'uA', '아무도 없는 회의를 팀원이 대신 끝내고 요약');
+  ok((await getDoc(`teams/${T}/calls/alive`)).status === 'live', '사람이 있는 회의는 건드리지 않음');
+  ok((await getDoc(`teams/${T}/calls/nosum`)).summary, '요약이 빠진 회의도 다시 요약');
+  await delDoc(`teams/${T}/calls/alive/peers/uC`); await delDoc(`teams/${T}/calls/alive`);
+
+  // 교수자 공유 + 회의 기록 지우기
+  A.eval('render()');
+  await until(() => A.document.querySelector(`[data-mt="share:${cid}"]`));
+  A.document.querySelector(`[data-mt="share:${cid}"]`).click();
+  await until(async () => (await getDoc(`teams/${T}/calls/${cid}`))?.shareProf === true);
+  ok(true, '회의 요약을 교수자에게 공유');
+  B.eval(`go('calls')`); await sleep(200);
+  ok(!B.document.querySelector(`[data-mt="erase:${cid.replace(/"/g, '')}"]`) || B.eval(`state.calls.find(c => c.id === '${cid}').startedBy`) === 'uB', '시작자·팀장이 아니면 지우기 버튼 없음');
+  const denied = await B.eval(`eraseCallDocs(callsRef().doc('${cid}')).then(() => 'ok').catch(e => e.code)`);
+  ok(denied === 'permission-denied', '다른 팀원은 회의 기록을 못 지움');
+  B.__errors.length = 0;
+  const lineCount = (await list(`teams/${T}/calls/${cid}/lines`)).length;
+  ok(lineCount >= 2, `거절됐으면 녹취가 남아 있음 (${lineCount}줄)`);
+  A.eval(`go('calls')`);
+  await until(() => A.document.querySelector(`[data-mt="erase:${cid}"]`));
+  A.document.querySelector(`[data-mt="erase:${cid}"]`).click();
+  await until(async () => !(await getDoc(`teams/${T}/calls/${cid}`)));
+  ok(!(await getDoc(`teams/${T}/calls/${cid}`)) && !(await list(`teams/${T}/calls/${cid}/lines`)).length, '시작한 사람이 회의·녹취를 모두 지움');
+
+  // Meet 녹취 가져오기
+  A.eval(`openMeetImport('회의 녹취록\\n안치성: 예산은 제가 정리하기로 했어요\\n김단유: 설문 결과는 제가 공유할게요\\n외부 손님: 좋습니다', '가져온 회의.txt', Date.now())`);
+  await sleep(150);
+  await A.eval(`importMeet(document.querySelector('#meetImportForm'))`);
+  await until(async () => (await list(`teams/${T}/calls`)).some(c => c.source === 'meet' && c.summary));
+  const imp = (await list(`teams/${T}/calls`)).find(c => c.source === 'meet');
+  ok(imp?.status === 'ended' && imp.lineCount === 3, 'Meet 녹취를 끝난 회의로 저장');
+  await until(() => B.eval(`state.calls.some(c => c.source === 'meet')`));
+  await B.eval('syncMyTalks()');
+  await until(async () => (await list(`teams/${T}/items`)).some(i => i.type === 'talk' && i.talk?.callId === imp.id && i.memberId === mB));
+  ok(true, "화자로 짝지어진 B의 방에 '내가 한 말' 생성");
+  noDenied(A, 'A'); noDenied(B, 'B'); noDenied(C, 'C');
+}
+
+// ---------- 시나리오 3: 방 관리 ----------
+async function scenarioManage({ A, B, C, P, X, T, mB, mC }) {
+  say('\n=== 방 관리: 재발급·내보내기·넘기기·나가기·삭제');
+  const oldLink = await invite(A, 'student');
+  A.eval(`openMenu()`);
+  await until(() => A.document.querySelector('[data-cloud="manage"]'));
+  A.document.querySelector('[data-cloud="manage"]').click();
+  await until(() => A.document.querySelector('.manage-list'));
+  ok(A.document.querySelectorAll('.manage-row').length === 4, '방 관리: 참여자 4명');
+  ok(A.document.querySelector('.manage-log')?.textContent.includes('x@x.com'), '방 관리: 막힌 접근 기록이 보임');
+  ok(!B.eval(`cloudMenuHTML()`).includes('data-cloud="manage"'), '팀원 메뉴에는 방 관리가 없음');
+
+  // 재발급
+  A.document.querySelector('[data-cloud="rotate:student"]').click();
+  await until(async () => (await invite(A, 'student')) !== oldLink);
+  const newLink = await invite(A, 'student');
+  ok(newLink !== oldLink, '초대 링크 다시 발급');
+  const viaOld = await X.eval(`joinFromInput(${JSON.stringify(oldLink)}).then(() => cloud.teamId)`);
+  ok(!viaOld && !(await getDoc(`teams/${T}/members/uX`)), '옛 링크로는 못 들어옴');
+  X.__errors.length = 0;
+
+  // 내보내기: C와 교수자
+  await A.eval(`cloudKick('uC')`);
+  await until(() => C.eval('cloud.teamId === null'));
+  ok(C.eval('cloud.teamId === null'), '내보내면 그 사람의 방이 바로 닫힘');
+  await until(() => C.eval(`!cloud.myTeams['${T}']`));
+  ok(!(await getDoc('users/uC'))?.teams?.[T], '내보낸 사람의 방 목록에서도 사라짐');
+  ok(!(await getDoc(`teams/${T}/claims/${mC}`)), '그 팀원 칸이 비워짐');
+  await until(() => !A.eval(`state.members.find(m => m.id === '${mC}').uid`));
+  ok(A.eval(`state.members.find(m => m.id === '${mC}').uid`) === undefined, '명단 칸은 남고 연결만 풀림');
+  C.__errors.length = 0;
+  const denied = await C.eval(`db.collection('teams').doc('${T}').get().then(() => 'read').catch(e => e.code)`);
+  ok(denied === 'permission-denied', '내보낸 사람은 방을 읽을 수 없음');
+  await A.eval(`cloudKick('uP')`);
+  await P.eval('cloudLoadProfTeams()');
+  await until(() => P.eval('cloud.profTeams.length === 0'));
+  ok(P.eval('cloud.profTeams.length === 0 && !cloud.myTeams["' + T + '"]'), '교수자 접근을 끊으면 교수자 보기에서 사라짐');
+  P.__errors.length = 0;
+  // 다시 들어오기
+  await joinAs(C, newLink, '박채연');
+  ok((await getDoc(`teams/${T}/claims/${mC}`))?.uid === 'uC' && C.eval('state.meId') === mC, '새 링크로 다시 들어와 원래 칸을 쓸 수 있음');
+
+  // 팀장 나가기 금지 → 넘기기
+  await A.eval(`cloudLeaveTeam()`);
+  ok(toastText(A).includes('팀장을 넘기거나') && (await getDoc(`teams/${T}/members/uA`)), '팀장은 바로 못 나감');
+  await A.eval(`cloudTransferOwner('uB')`);
+  await until(() => B.eval('cloud.owner') && !A.eval('cloud.owner'));
+  ok(B.eval('cloud.owner') && !A.eval('cloud.owner'), '팀장 넘기기');
+  ok(B.eval(`cloudMenuHTML()`).includes('data-cloud="manage"'), '새 팀장에게 방 관리가 보임');
+  const prof = await B.eval(`teamRef().collection('secrets').doc('prof').get().then(s => Boolean(s.data().code))`);
+  ok(prof, '새 팀장이 교수자 링크를 읽음');
+
+  // 내 기록까지 지우고 나가기 (LS-5)
+  const before = (await list(`teams/${T}/items`)).filter(i => i.ownerUid === 'uA').length;
+  await A.eval(`cloudLeaveTeam(true)`);
+  await until(() => A.eval('cloud.teamId === null'));
+  const after = await list(`teams/${T}/items`);
+  ok(before > 0 && !after.some(i => i.ownerUid === 'uA'), `내 기록 ${before}개를 지우고 나감`);
+  ok(!(await list(`teams/${T}/itemMeta`)).some(i => i.ownerUid === 'uA'), '횟수 기록도 함께 지움');
+  ok(!(await getDoc(`teams/${T}/members/uA`)) && !(await getDoc('users/uA'))?.teams?.[T], '역할·방 목록 정리');
+  noDenied(A, 'A');
+
+  // 방 삭제 (B: 새 팀장, C는 접속 중)
+  const name = B.eval('state.teamName');
+  B.eval(`openManageModal()`);
+  await until(() => B.document.querySelector('[data-cloud="delete"]'));
+  B.__promptAnswer = '다른 이름';
+  B.document.querySelector('[data-cloud="delete"]').click();
+  await sleep(500);
+  ok(await getDoc(`teams/${T}`), '방 이름이 다르면 삭제 안 함');
+  await until(() => B.document.querySelector('[data-cloud="delete"]'));
+  B.__promptAnswer = name;
+  B.document.querySelector('[data-cloud="delete"]').click();
+  await until(async () => !(await getDoc(`teams/${T}`)), 20000);
+  ok(!(await getDoc(`teams/${T}`)), '방 삭제');
+  const left = await collections(`teams/${T}`);
+  const remain = [];
+  for (const c of left) remain.push(...(await list(`teams/${T}/${c}`)).map(d => `${c}/${d.id}`));
+  ok(remain.length === 0, `하위 문서가 남지 않음${remain.length ? ` → ${remain.slice(0, 5).join(', ')}` : ''}`);
+  await until(() => C.eval('cloud.teamId === null'));
+  ok(C.eval('cloud.teamId === null'), '접속 중이던 팀원의 방도 닫힘');
+  await until(() => C.eval(`!cloud.myTeams['${T}']`));
+  ok(!(await getDoc('users/uC'))?.teams?.[T], '팀원의 방 목록에서도 정리');
+  await until(() => !B.eval('cloud.teamId'));
+  ok(B.eval(`cloud.showSetup`), '삭제한 사람은 방 선택 화면으로');
+  noDenied(B, 'B', ['Missing or insufficient']);
+  C.__errors.length = 0;
+}
+
+// 삭제가 중간에 끊겨도 이어서 지울 수 있다 + 예전 방 호환
+async function scenarioLegacy() {
+  say('\n=== 예전 방 호환·삭제 이어 하기');
+  closeAll();
+  await wipe();
+  const A = await open('uA'), B = await open('uB');
+  // 규칙 강화 전에 만든 방: claim 문서가 없다
+  const T = 'oldroom';
+  await setDoc(`teams/${T}`, { teamName: '옛날 방', course: '', ownerUid: 'uA', decisionDismissed: [], links: {}, members: [{ id: 'mA', name: '안치성', color: '#6366f1', uid: 'uA' }, { id: 'mB', name: '김단유', color: '#f97316', uid: 'uB' }, { id: 'mFree', name: '빈자리', color: '#10b981' }] });
+  await setDoc(`teams/${T}/secrets/student`, { code: 'student-code-123456' });
+  await setDoc(`teams/${T}/secrets/prof`, { code: 'prof-code-1234567890' });
+  await setDoc(`teams/${T}/members/uA`, { uid: 'uA', role: 'student', memberId: 'mA', code: '', joinedAt: 1 });
+  await setDoc(`teams/${T}/members/uB`, { uid: 'uB', role: 'student', memberId: 'mB', code: 'x', joinedAt: 1 });
+  await setDoc(`users/uA`, { teams: { [T]: { name: '옛날 방', role: 'student' } } });
+  await setDoc(`users/uB`, { teams: { [T]: { name: '옛날 방', role: 'student' } } });
+  A.eval(`loadMyTeams().then(() => cloudOpenTeam('${T}'))`);
+  B.eval(`loadMyTeams().then(() => cloudOpenTeam('${T}'))`);
+  await until(async () => (await getDoc(`teams/${T}/claims/mA`)) && (await getDoc(`teams/${T}/claims/mB`)));
+  ok((await getDoc(`teams/${T}/claims/mA`))?.uid === 'uA' && (await getDoc(`teams/${T}/claims/mB`))?.uid === 'uB', '예전 방: 접속하면 자기 칸이 자동으로 선점됨');
+  await until(() => A.eval('state.meId === "mA" && cloud.loaded'));
+  A.eval(`addItem({ memberId: state.meId, type: 'memo', title: '옛 방에서도 저장', content: '내용', visibility: 'team' })`);
+  await until(async () => (await list(`teams/${T}/items`)).length === 1);
+  ok(true, '예전 방: 기록 저장 그대로');
+  // 끊긴 삭제: deleting 표시만 된 상태에서 팀원은 들어올 수 없고 팀장은 이어서 지운다
+  await A.eval(`teamRef().update({ deleting: true })`);
+  await until(() => B.eval('cloud.teamId === null'));
+  ok(B.eval('cloud.teamId === null'), '삭제 중인 방에서 팀원은 닫힘');
+  await until(() => A.eval('cloud.docs.team.deleting === true'));
+  await A.eval('openManageModal()');
+  await until(() => A.document.querySelector('[data-cloud="undelete"]'));
+  ok(A.document.querySelector('.modal')?.textContent.includes('삭제가 끝나지 않았어요'), '팀장: 이어서 삭제/취소 안내');
+  A.document.querySelector('[data-cloud="undelete"]').click();
+  await until(async () => (await getDoc(`teams/${T}`))?.deleting === false);
+  ok(true, '삭제 취소');
+  await A.eval('cloudDeleteTeam()');
+  await until(async () => !(await getDoc(`teams/${T}`)));
+  ok(!(await getDoc(`teams/${T}`)), '방 삭제 완료');
+  noDenied(A, 'A');
+  B.__errors.length = 0;
+}
+
+async function run() {
+  if (!ONLY || ONLY === 'room') {
+    const ctx = await scenarioRoom();
+    await scenarioCalls(ctx);
+    await scenarioManage(ctx);
+    await scenarioLegacy();
+  }
+  if (!ONLY || ONLY === 'ai') await window.scenarioAi?.();
+  closeAll();
+}
+window.addEventListener('load', () => run()
+  .catch(e => ok(false, `시험 중단: ${e.stack || e}`))
+  .finally(() => { window.DONE = true; }));
+</script>
+</body></html>

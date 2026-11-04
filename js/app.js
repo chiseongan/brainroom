@@ -757,10 +757,13 @@ document.addEventListener('click', e => {
   const claim = t.closest('[data-claim]');
   if (claim) {
     const id = claim.dataset.claim === 'new' ? addMember(authUser.name).id : claim.dataset.claim;
-    claimMember(id, authUser);
-    if (cloudOn()) cloudSetMemberId(id);
-    toast(`${member(id).name}님의 방에 연결됐어요`);
-    return go('meeting');
+    // 온라인 방: 규칙이 이 팀원을 나에게 내줘야 연결한다 (같은 이름을 두 계정이 고르지 못하게)
+    return Promise.resolve(cloudOn() ? cloudSetMemberId(id) : true).then(won => {
+      if (!won) return render();
+      claimMember(id, authUser);
+      toast(`${member(id).name}님의 방에 연결됐어요`);
+      go('meeting');
+    });
   }
 
   if (t.closest('#guestSampleBtn')) {

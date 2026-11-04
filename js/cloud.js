@@ -5,7 +5,8 @@
 //   users/{uid}                     { teams: { [teamId]: { name, role } } }  내가 속한 팀 목록
 //   teams/{teamId}                  { teamName, course, ownerUid, members[], decisionDismissed[] }
 //   teams/{teamId}/secrets/{kind}   { code }  student = 팀원 초대 코드, prof = 교수자 초대 코드 (팀장만 읽음)
-//   teams/{teamId}/members/{uid}    { uid, role, memberId, code }  역할 문서 (본인만 읽음)
+//   teams/{teamId}/members/{uid}    { uid, role, memberId, code, name, email }  역할 문서 (본인과 팀장만 읽음)
+//   teams/{teamId}/claims/{memberId} { uid, at }  명단의 팀원 한 명 = 계정 하나 (먼저 만든 계정이 그 팀원)
 //   teams/{teamId}/items/{id}       기록 내용 (공유 범위에 따라 읽기 제한)
 //   teams/{teamId}/itemMeta/{id}    { memberId, ownerUid, type, createdAt, visibility, purpose }  횟수·목적 집계용
 //   teams/{teamId}/decisions|quests|corrections|logs|accessLogs
@@ -143,7 +144,7 @@ async function cloudJoin(teamId, code, role) {
     const mine = await memRef.get();
     if (!mine.exists) {
       if (!code) throw Object.assign(new Error('no code'), { code: 'permission-denied' });
-      await memRef.set({ uid: authUser.uid, role, memberId: null, code, joinedAt: Date.now() });
+      await memRef.set({ uid: authUser.uid, role, memberId: null, code, joinedAt: Date.now(), name: authUser.name || '', email: authUser.email || '' });
     }
     const actualRole = mine.exists ? mine.data().role : role;
     const team = await teamRef(teamId).get();
@@ -195,6 +196,8 @@ function cloudOpenTeam(teamId) {
   });
   savePrefs({ mode: 'team', lastTeam: teamId });
   cloud.roleDoc = null;
+  cloud.claimChecked = false;
+  cloud.settingMember = false;
 
   const t = teamRef(teamId);
   t.collection('members').doc(authUser.uid).get()
@@ -204,13 +207,17 @@ function cloudOpenTeam(teamId) {
     console.error(err);
     if (cloud.teamId !== teamId) return;
     if (err.code === 'permission-denied') logDenied(teamId, 'open');
-    toast(err.code === 'permission-denied' ? '이 팀에 접근할 권한이 없어요' : '팀 정보를 불러오지 못했어요');
+    toast(err.code === 'permission-denied' ? '이 방에 접근할 권한이 없어요' : err.code === 'not-found' ? '이 방은 삭제됐어요' : '방 정보를 불러오지 못했어요');
     cloudClose();
-    state = loadState();
+    state = null;
+    cloud.showSetup = true;
+    cloud.setupMode = null;
+    pruneTeamIfGone(teamId, err.code).finally(render);
     render();
   };
   cloud.unsubs.push(t.onSnapshot(snap => {
     if (!snap.exists) return fail({ code: 'not-found' });
+    if (snap.data().deleting && snap.data().ownerUid !== authUser.uid) return fail({ code: 'not-found' }); // 팀장이 삭제하는 중
     cloud.docs.team = snap.data();
     cloud.loaded = true;
     rebuildState();
@@ -238,20 +245,25 @@ function cloudOpenTeam(teamId) {
 }
 
 // ---------- 실시간 접속 표시 (RQ-8) ----------
-// teams/{t}/presence/{uid} { memberId, at } 를 1분마다 갱신하고, 2분 반 안에 갱신한 팀원을 '접속 중'으로 본다.
-const PRESENCE_EVERY_MS = 60 * 1000;
-const PRESENCE_ONLINE_MS = 150 * 1000;
+// teams/{t}/presence/{uid} { memberId, at } 를 2분마다 갱신하고, 5분 안에 갱신한 팀원을 '접속 중'으로 본다.
+// 무료 요금제의 하루 읽기 한도(5만 회)는 프로젝트 전체가 함께 쓰므로, 화면을 보고 있을 때만 갱신한다.
+const PRESENCE_EVERY_MS = 2 * 60 * 1000;
+const PRESENCE_ONLINE_MS = 5 * 60 * 1000;
 let presenceTimer = null;
+let presenceExpiryTimer = null;
+let presenceBeat = null;
 
 function startPresence(teamId) {
   stopPresence();
   const ref = teamRef(teamId).collection('presence');
   const beat = () => {
-    if (cloud.teamId !== teamId || !state?.meId) return;
+    if (cloud.teamId !== teamId || !state?.meId || document.visibilityState === 'hidden') return;
     ref.doc(authUser.uid).set({ uid: authUser.uid, memberId: state.meId, at: Date.now() }).catch(() => { /* 예전 규칙이면 조용히 건너뜀 */ });
   };
+  presenceBeat = beat;
   setTimeout(beat, 1500); // 팀원 연결(meId)이 정해진 뒤
-  presenceTimer = setInterval(() => { beat(); rebuildState(); }, PRESENCE_EVERY_MS); // 오래된 접속도 정리
+  presenceTimer = setInterval(beat, PRESENCE_EVERY_MS);
+  presenceExpiryTimer = setInterval(() => rebuildState(), 60 * 1000); // 오래된 접속 정리 (읽기 없음)
   cloud.unsubs.push(ref.onSnapshot(snap => {
     cloud.docs.presence = new Map(snap.docs.map(d => [d.id, d.data()]));
     rebuildState();
@@ -260,9 +272,12 @@ function startPresence(teamId) {
 
 function stopPresence() {
   clearInterval(presenceTimer);
-  presenceTimer = null;
+  clearInterval(presenceExpiryTimer);
+  presenceTimer = presenceExpiryTimer = presenceBeat = null;
   if (cloud.teamId && authUser) teamRef().collection('presence').doc(authUser.uid).set({ uid: authUser.uid, memberId: state?.meId ?? null, at: 0 }).catch(() => {});
 }
+
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') presenceBeat?.(); });
 
 function stubFromMeta(id, m) {
   return {
@@ -286,6 +301,7 @@ function rebuildState() {
   // 명단에는 연결돼 있는데 역할 문서에 팀원 id가 없으면 (나갔다가 다시 들어온 경우 등) 채운다
   const mine = state.members.find(m => m.uid === authUser.uid);
   if (mine && cloud.roleDoc?.role === 'student' && cloud.roleDoc.memberId == null) cloudSetMemberId(mine.id);
+  ensureMyClaim();
   const serverTeam = teamFields(d.team);
   cloud.synced.team = Object.fromEntries(Object.keys(serverTeam).map(k => [k, stableStr(serverTeam[k])]));
 
@@ -305,6 +321,7 @@ function rebuildState() {
   const now = Date.now();
   state.online = new Set([...(d.presence || new Map()).values()].filter(p => p.memberId && now - p.at < PRESENCE_ONLINE_MS).map(p => p.memberId));
   if (typeof scheduleTalkSync === 'function') scheduleTalkSync(); // 끝난 회의의 내 발언 요약을 내 방에
+  if (typeof scheduleCallSweep === 'function') scheduleCallSweep(); // 아무도 남지 않은 회의 정리
   cloud.synced.logs = Object.fromEntries([...d.logs].map(([id, x]) => [id, stableStr(x)]));
   scheduleRender();
 }
@@ -452,7 +469,8 @@ async function cloudCreateTeamFrom(src) {
     head.set(ref, { ...teamFields(ws), ownerUid: authUser.uid, createdAt: Date.now() });
     head.set(ref.collection('secrets').doc('student'), { code: randomCode() });
     head.set(ref.collection('secrets').doc('prof'), { code: randomCode() });
-    head.set(ref.collection('members').doc(authUser.uid), { uid: authUser.uid, role: 'student', memberId: me.id, code: '', joinedAt: Date.now() });
+    head.set(ref.collection('members').doc(authUser.uid), { uid: authUser.uid, role: 'student', memberId: me.id, code: '', joinedAt: Date.now(), name: authUser.name || '', email: authUser.email || '' });
+    head.set(ref.collection('claims').doc(me.id), { uid: authUser.uid, at: Date.now() });
     await head.commit();
 
     const ops = [];
@@ -482,31 +500,227 @@ async function cloudCreateTeamFrom(src) {
 }
 
 // 이 계정만 팀에서 나간다. 팀 데이터는 팀원들을 위해 남고, 초대 링크로 다시 들어올 수 있다.
-async function cloudLeaveTeam() {
+// 팀장은 먼저 넘기거나 방을 삭제해야 한다 (팀장 없는 방이 남지 않게).
+// eraseMine: 내 기록과 내 발언도 함께 지운다 (LS-5)
+async function cloudLeaveTeam(eraseMine = false) {
   const id = cloud.teamId;
+  if (cloud.owner) return toast('방을 만든 사람은 나가기 전에 ⚙️ → 👥 방 관리에서 팀장을 넘기거나 방을 삭제해 주세요');
   const mine = memberByUid(authUser.uid);
+  const t = teamRef(id);
   try {
+    if (eraseMine) await eraseMyRecords(t);
     if (mine) {
       delete mine.uid; delete mine.email; delete mine.photo;
-      await teamRef(id).update(teamFields(state)); // 명단에서 내 연결 풀기 (팀원일 때 해야 함)
+      await t.update(teamFields(state)); // 명단에서 내 연결 풀기 (팀원일 때 해야 함)
     }
-    await teamRef(id).collection('members').doc(authUser.uid).delete();
+    const batch = db.batch();
+    if (cloud.roleDoc?.memberId) batch.delete(t.collection('claims').doc(cloud.roleDoc.memberId));
+    batch.delete(t.collection('members').doc(authUser.uid));
+    await batch.commit();
     await userRef().update({ [`teams.${id}`]: firebase.firestore.FieldValue.delete() });
     delete cloud.myTeams[id];
-    toast('팀에서 나왔어요');
+    toast(eraseMine ? '내 기록을 지우고 방에서 나왔어요' : '방에서 나왔어요');
   } catch (e) {
     writeFailed(e);
   }
   cloudClose();
+  state = null;
+  cloud.showSetup = true;
+  cloud.setupMode = null;
   savePrefs({ lastTeam: null });
   render();
 }
 
-// 명단의 팀원을 고르면, 규칙이 기록 작성자를 확인할 수 있도록 역할 문서에도 남긴다
-function cloudSetMemberId(memberId) {
-  if (!cloudOn()) return;
-  if (cloud.roleDoc) cloud.roleDoc.memberId = memberId;
-  teamRef().collection('members').doc(authUser.uid).update({ memberId }).catch(writeFailed);
+// 쿼리 결과를 묶음으로 지운다
+async function deleteDocs(docs) {
+  for (let i = 0; i < docs.length; i += 300) {
+    const batch = db.batch();
+    docs.slice(i, i + 300).forEach(d => batch.delete(d.ref));
+    await batch.commit();
+  }
+  return docs.length;
+}
+
+async function eraseMyRecords(t) {
+  const items = await t.collection('items').where('ownerUid', '==', authUser.uid).get();
+  await deleteDocs(items.docs);
+  await deleteDocs(items.docs.map(d => ({ ref: t.collection('itemMeta').doc(d.id) })));
+  const calls = await t.collection('calls').get();
+  for (const c of calls.docs) {
+    const lines = await c.ref.collection('lines').where('uid', '==', authUser.uid).get();
+    await deleteDocs(lines.docs);
+  }
+}
+
+// 명단의 팀원을 고른다: claim을 먼저 만든 계정만 그 팀원이 된다 (규칙이 강제). 성공하면 true
+async function cloudSetMemberId(memberId) {
+  if (!cloudOn() || cloud.settingMember) return false;
+  cloud.settingMember = true;
+  const t = teamRef();
+  try {
+    const batch = db.batch();
+    batch.update(t.collection('members').doc(authUser.uid), { memberId });
+    batch.set(t.collection('claims').doc(memberId), { uid: authUser.uid, at: Date.now() });
+    await batch.commit();
+    if (cloud.roleDoc) cloud.roleDoc.memberId = memberId;
+    cloud.claimChecked = true;
+    return true;
+  } catch (e) {
+    console.error(e);
+    toast(e.code === 'permission-denied' ? '이미 다른 계정이 쓰는 이름이거나, Firestore 규칙이 최신이 아니에요' : '저장하지 못했어요. 인터넷 연결을 확인해 주세요');
+    return false;
+  } finally {
+    cloud.settingMember = false;
+  }
+}
+
+// 예전에 만든 방: 이미 연결된 계정의 claim을 채워 넣어 다른 계정이 같은 팀원을 고르지 못하게 한다
+function ensureMyClaim() {
+  const memberId = cloud.roleDoc?.memberId;
+  if (!memberId || cloud.claimChecked) return;
+  cloud.claimChecked = true;
+  const ref = teamRef().collection('claims').doc(memberId);
+  ref.get().then(snap => {
+    if (!snap.exists) return ref.set({ uid: authUser.uid, at: Date.now() });
+  }).catch(() => { /* 예전 규칙이면 조용히 건너뜀 */ });
+}
+
+// 지워졌거나 내보내진 방은 내 방 목록에서도 뺀다 (일시적인 오류면 그대로 둔다)
+async function pruneTeamIfGone(teamId, code = 'permission-denied') {
+  if (code !== 'not-found' && code !== 'permission-denied') return;
+  try {
+    const role = await teamRef(teamId).collection('members').doc(authUser.uid).get();
+    if (code !== 'not-found' && role.exists) return;
+    delete cloud.myTeams[teamId];
+    await userRef().update({ [`teams.${teamId}`]: firebase.firestore.FieldValue.delete() });
+  } catch (e) { console.warn('방 목록 정리 실패', e); }
+}
+
+// ---------- 방 관리 (방을 만든 사람) ----------
+
+async function openManageModal() {
+  openModal('<h2>👥 방 관리</h2><p class="muted">불러오는 중…</p>');
+  let roles = [], logs = [];
+  try {
+    const [r, l] = await Promise.all([
+      teamRef().collection('members').get(),
+      teamRef().collection('accessLogs').get().catch(() => ({ docs: [] })),
+    ]);
+    roles = r.docs.map(d => d.data());
+    logs = l.docs.map(d => d.data()).sort((a, b) => b.at - a.at).slice(0, 20);
+  } catch (e) {
+    closeModal();
+    return writeFailed(e, '방 관리');
+  }
+  const nameOf = r => state.members.find(m => m.uid === r.uid || m.id === r.memberId)?.name || r.name || `이름 없음 (${r.uid.slice(0, 6)})`;
+  const rows = roles.sort((a, b) => (a.role === b.role ? 0 : a.role === 'student' ? -1 : 1)).map(r => {
+    const self = r.uid === authUser.uid;
+    return `<li class="manage-row">
+      <span><b>${esc(nameOf(r))}</b>${r.email ? ` <span class="muted sm">${esc(r.email)}</span>` : ''}
+        <span class="vis-badge ${r.role === 'prof' ? 'vis-prof' : 'vis-team'}">${self ? '팀장 (나)' : r.role === 'prof' ? '교수자' : '팀원'}</span></span>
+      ${self ? '' : `<span class="manage-actions">
+        ${r.role === 'student' ? `<button class="btn sm" data-cloud="owner:${esc(r.uid)}">팀장 넘기기</button>` : ''}
+        <button class="btn sm danger" data-cloud="kick:${esc(r.uid)}">${r.role === 'prof' ? '접근 끊기' : '내보내기'}</button></span>`}
+    </li>`;
+  }).join('');
+  const deleting = cloud.docs.team?.deleting;
+  openModal(`
+    <h2>👥 방 관리 <span class="muted sm">${esc(state.teamName)}</span></h2>
+    <h3>참여자 ${roles.length}명</h3>
+    <ul class="manage-list">${rows}</ul>
+    <p class="muted sm">내보낸 사람의 기록은 방에 남고, 그 사람은 더 이상 방을 보거나 쓸 수 없어요. 초대 링크를 함께 다시 발급하면 다시 들어올 수도 없어요.</p>
+    <h3>초대 링크 다시 발급</h3>
+    <p class="muted sm">링크가 밖으로 샜을 때 쓰세요. 예전 링크는 바로 막히고, 이미 들어온 사람은 그대로예요.</p>
+    <div class="modal-actions" style="justify-content:flex-start">
+      <button class="btn sm" data-cloud="rotate:student">팀원 링크 다시 발급</button>
+      <button class="btn sm" data-cloud="rotate:prof">교수자 링크 다시 발급</button>
+    </div>
+    <h3>막힌 접근 기록 <span class="muted sm">${logs.length}건</span></h3>
+    ${logs.length ? `<ul class="manage-log">${logs.map(l => `<li class="sm">${fmtDate(l.at)} · ${esc(l.email || l.uid.slice(0, 6))} · ${esc(l.what)}</li>`).join('')}</ul>` : '<p class="muted sm">아직 없어요.</p>'}
+    <h3>방 삭제</h3>
+    <p class="muted sm">기록, 회의 녹취, 초대 링크가 모두 지워지고 되돌릴 수 없어요. 필요하면 먼저 ⚙️ 메뉴에서 전체 백업을 받으세요.</p>
+    ${deleting ? '<p class="notice sm">⚠️ 삭제가 끝나지 않았어요. 이어서 삭제하거나 취소할 수 있어요.</p>' : ''}
+    <div class="modal-actions" style="justify-content:flex-start">
+      <button class="btn sm danger" data-cloud="delete">🗑️ 방 삭제${deleting ? ' 이어 하기' : ''}</button>
+      ${deleting ? '<button class="btn sm" data-cloud="undelete">삭제 취소</button>' : ''}
+    </div>
+    <div class="modal-actions"><button class="btn ghost" data-close>닫기</button></div>`);
+}
+
+async function cloudKick(uid) {
+  const t = teamRef();
+  try {
+    const role = await t.collection('members').doc(uid).get();
+    const batch = db.batch();
+    batch.delete(role.ref);
+    if (role.data()?.memberId) batch.delete(t.collection('claims').doc(role.data().memberId));
+    await batch.commit();
+    const m = state.members.find(x => x.uid === uid);
+    if (m) { delete m.uid; delete m.email; delete m.photo; saveState(); } // 명단 칸은 남아 기록이 이어지고, 다시 고를 수 있다
+    toast('내보냈어요');
+  } catch (e) {
+    writeFailed(e, '내보내기');
+  }
+}
+
+async function cloudRotateInvite(kind) {
+  try {
+    await teamRef().collection('secrets').doc(kind).update({ code: randomCode() });
+    toast(`${kind === 'prof' ? '교수자' : '팀원'} 초대 링크를 다시 발급했어요. 예전 링크는 이제 쓸 수 없어요`);
+  } catch (e) {
+    writeFailed(e, '초대 링크');
+  }
+}
+
+async function cloudTransferOwner(uid) {
+  try {
+    await teamRef().update({ ownerUid: uid });
+    toast('팀장을 넘겼어요. 이제 이 방에서 나갈 수 있어요');
+  } catch (e) {
+    writeFailed(e, '팀장 넘기기');
+  }
+}
+
+// 방 삭제: 표시 → 하위 문서 → 내 역할 → 팀 문서 순서 (규칙이 tearingDown일 때만 남의 기록을 지우게 한다)
+// 중간에 끊겨도 다시 누르면 남은 것부터 이어서 지운다
+async function cloudDeleteTeam() {
+  const id = cloud.teamId;
+  const t = teamRef(id);
+  try {
+    await t.update({ deleting: true });
+    cloud.unsubs.forEach(u => u());
+    cloud.unsubs = [];
+    stopPresence();
+    const calls = await t.collection('calls').get();
+    for (const c of calls.docs) await eraseCallDocs(c.ref);
+    const meta = await t.collection('itemMeta').get();
+    await deleteDocs(meta.docs.map(d => ({ ref: t.collection('items').doc(d.id) })));
+    await deleteDocs(meta.docs);
+    const mine = await t.collection('items').where('ownerUid', '==', authUser.uid).get(); // 목록에 없던 내 기록
+    await deleteDocs(mine.docs);
+    for (const name of ['decisions', 'quests', 'corrections', 'logs', 'accessLogs', 'presence', 'claims']) {
+      await deleteDocs((await t.collection(name).get()).docs);
+    }
+    await deleteDocs([{ ref: t.collection('secrets').doc('student') }, { ref: t.collection('secrets').doc('prof') }]);
+    const roles = await t.collection('members').get();
+    await deleteDocs(roles.docs.filter(d => d.id !== authUser.uid));
+    await t.collection('members').doc(authUser.uid).delete();
+    await t.delete();
+    delete cloud.myTeams[id];
+    await userRef().update({ [`teams.${id}`]: firebase.firestore.FieldValue.delete() });
+    toast('방을 삭제했어요');
+  } catch (e) {
+    writeFailed(e, '방 삭제');
+    toast('방을 다 지우지 못했어요. 다시 열어 👥 방 관리에서 이어서 삭제할 수 있어요');
+  }
+  cloud.teamId = null;
+  cloud.loaded = false;
+  cloudClose();
+  state = null;
+  cloud.showSetup = true;
+  cloud.setupMode = null;
+  savePrefs({ lastTeam: null });
+  render();
 }
 
 // ---------- 교수자 보기 ----------
@@ -538,6 +752,7 @@ async function loadProfTeam(id) {
       // 팀이 '교수자에게 공유'한 회의 요약만 (녹취 원문은 공유하지 않는다)
       t.collection('calls').where('shareProf', '==', true).get().catch(() => ({ docs: [] })),
     ]);
+    if (!team.exists) { await pruneTeamIfGone(id, 'not-found'); return null; }
     const full = new Map(items.docs.map(d => [d.id, d.data()]));
     const data = team.data();
     return sanitizeForProf({
@@ -552,6 +767,7 @@ async function loadProfTeam(id) {
   } catch (e) {
     console.error(e);
     logDenied(id, 'prof-view');
+    await pruneTeamIfGone(id);
     return null;
   }
 }
@@ -567,6 +783,7 @@ function cloudMenuHTML() {
         ${myRoomsHTML() || '<p class="muted sm">아직 참여한 방이 없어요.</p>'}
         <button class="btn" data-cloud="new:create">🏠 새 방 만들기</button>
         <button class="btn" data-cloud="new:join">🔑 다른 방 참여하기</button>
+        ${cloudOn() && cloud.owner ? '<button class="btn" data-cloud="manage">👥 방 관리 <small class="muted">(참여자·초대 링크·방 삭제)</small></button>' : ''}
         ${cloudOn() ? '<button class="btn danger" data-cloud="leave">🚪 이 방에서 나가기</button>' : ''}
         <button class="btn ghost" data-cloud="local">💻 이 기기 데모로 열기</button>
       </div>
@@ -682,8 +899,29 @@ document.addEventListener('click', async e => {
     savePrefs({ mode: 'local' });
     state = loadState();
   } else if (act === 'leave') {
-    if (!confirm('이 계정만 팀에서 나갈까요? 팀원들의 데이터는 그대로 남고, 초대 링크로 다시 들어올 수 있어요.')) return;
-    return cloudLeaveTeam();
+    if (cloud.owner) return cloudLeaveTeam(); // 안내만 하고 나가지 않는다
+    if (!confirm('이 계정만 방에서 나갈까요? 초대 링크로 다시 들어올 수 있어요.')) return;
+    return cloudLeaveTeam(confirm('내가 쓴 기록과 회의에서 한 말도 모두 지울까요?\n\n[확인] 지우고 나가기 (되돌릴 수 없어요)\n[취소] 기록은 방에 남기고 나가기'));
+  } else if (act === 'manage') {
+    return openManageModal();
+  } else if (act === 'kick') {
+    if (!confirm('이 사람을 방에서 내보낼까요?')) return openManageModal();
+    await cloudKick(arg);
+    return openManageModal();
+  } else if (act === 'rotate') {
+    if (!confirm('초대 링크를 다시 발급할까요? 예전 링크는 바로 막혀요.')) return openManageModal();
+    await cloudRotateInvite(arg);
+    return openManageModal();
+  } else if (act === 'owner') {
+    if (!confirm('팀장을 넘길까요? 방 관리와 교수자 링크는 새 팀장만 볼 수 있어요.')) return openManageModal();
+    return cloudTransferOwner(arg);
+  } else if (act === 'delete') {
+    const typed = prompt(`방을 삭제하면 모든 기록과 녹취가 사라지고 되돌릴 수 없어요.\n삭제하려면 방 이름 "${state.teamName}"을 그대로 입력하세요.`);
+    if (typed !== state.teamName) { if (typed !== null) toast('방 이름이 달라 삭제하지 않았어요'); return openManageModal(); }
+    return cloudDeleteTeam();
+  } else if (act === 'undelete') {
+    await teamRef().update({ deleting: false }).catch(writeFailed);
+    return openManageModal();
   } else if (act === 'refresh') {
     toast('새로 불러오는 중…');
     await loadMyTeams();

@@ -82,7 +82,7 @@ async function importMeet(form) {
   });
   const attendees = [...new Set(lines.map(l => l.name))];
   const ref = callsRef().doc();
-  const title = (data.get('title') || meetDraft.title).trim() || 'Google Meet 회의';
+  const title = ((data.get('title') || meetDraft.title).trim() || 'Google Meet 회의').slice(0, 200);
   closeModal();
   toast('녹취록을 저장하는 중…');
   try {
@@ -93,12 +93,12 @@ async function importMeet(form) {
       lines.slice(i, i + 400).forEach(l => batch.set(ref.collection('lines').doc(), l));
       await batch.commit();
     }
-    const { summary, summaryBy } = await meetingSummary(lines, attendees);
+    const { summary, summaryBy, decisions } = await meetingSummary(lines, attendees);
     await ref.set({
       id: ref.id, title, status: 'ended', source: 'meet', imported: true,
       startedBy: myUid(), startedByName: member(state.meId)?.name || authUser.name,
       startedAt: startAt, endedAt: startAt + lines.length * 1000,
-      summary, summaryBy, attendees, lineCount: lines.length,
+      summary, summaryBy, decisions, attendees, lineCount: lines.length,
     });
     meetDraft = null;
     toast(`📥 「${title}」 녹취록을 회의로 저장했어요. 팀원 방에 '내가 한 말'이 곧 생겨요`);

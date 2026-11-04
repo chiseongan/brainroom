@@ -173,16 +173,27 @@ function decisionCandidates() {
   const taken = new Set(state.decisionDismissed);
   state.decisions.forEach(d => d.candidateKey && taken.add(d.candidateKey));
   const out = [];
-  visibleItems().forEach(item => {
-    const text = `${item.content}\n${item.ai?.transcript || ''}`;
-    sentencesOf(text).forEach(s => {
-      if (!DECISION_PATTERN.test(s)) return;
-      const key = candidateKey(item.id, s);
-      if (taken.has(key)) return;
-      taken.add(key);
-      out.push({ key, itemId: item.id, text: s, memberId: item.memberId, createdAt: item.createdAt });
-    });
+  const seenText = new Set(); // 같은 말이 내 발언 기록과 회의 요약에 모두 있어도 후보는 하나
+  const push = (item, s) => {
+    const key = candidateKey(item.id, s);
+    const norm = s.replace(/\s+/g, '');
+    if (taken.has(key) || seenText.has(norm)) return;
+    taken.add(key);
+    seenText.add(norm);
+    out.push({ key, itemId: item.id, text: s, memberId: item.memberId, createdAt: item.createdAt });
+  };
+  const visible = visibleItems();
+  visible.forEach(item => {
+    // AI가 '정한 것'으로 뽑은 문장은 말투와 상관없이 후보로
+    [...(item.ai?.decisions || []), ...(item.talk?.decisions || [])].forEach(s => push(item, s));
+    const text = `${item.content}\n${item.ai?.transcript || ''}\n${item.talk?.transcript || ''}`;
+    sentencesOf(text).forEach(s => { if (DECISION_PATTERN.test(s)) push(item, s); });
   });
+  // 회의에서 정한 것 (근거는 그 회의의 '내가 한 말' 기록. 근거 없는 결정은 만들지 않는다 ONRQ-2)
+  (state.calls || []).forEach(c => (c.decisions || []).forEach(s => {
+    const source = visible.find(i => i.talk?.callId === c.id);
+    if (source) push(source, s);
+  }));
   return out.sort((a, b) => b.createdAt - a.createdAt);
 }
 

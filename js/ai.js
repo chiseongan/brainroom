@@ -113,7 +113,7 @@ async function enhanceAiItem(item) {
   const cur = ai && itemById(item.id);
   if (!cur?.ai) return;
   cur.content = `요약: ${ai.summary}`.slice(0, 2000);
-  cur.ai = { ...cur.ai, purpose: ai.purpose, summaryBy: 'ai' };
+  cur.ai = { ...cur.ai, purpose: ai.purpose, summaryBy: 'ai', decisions: ai.decisions };
   if (ai.keywords.length) cur.keywords = ai.keywords.slice(0, 6);
   saveState();
   render();

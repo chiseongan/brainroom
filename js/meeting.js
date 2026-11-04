@@ -3,7 +3,7 @@
 // - 녹취: 각자 자기 마이크만 받아쓴다(Web Speech API) → 누가 말했는지 정확하다.
 // - 요약: 규칙 기반(참석자·발언 수·키워드·주요 발언·정한 것). LLM 요약은 프록시 서버를 붙인 뒤.
 //
-// Firestore: teams/{t}/calls/{callId}            { title, status: live|ended, startedAt, endedAt, summary }
+// Firestore: teams/{t}/calls/{callId}            { title, status: live|ended, startedAt, endedAt, summary, decisions, closedBy }
 //                       /calls/{callId}/peers/{uid}   참여 중인 사람 (20초마다 살아 있음 표시)
 //                       /calls/{callId}/signals/{id}  연결 정보 (받는 사람이 읽고 지움)
 //                       /calls/{callId}/lines/{id}    녹취 한 줄 { uid, memberId, name, text, at }
@@ -114,6 +114,7 @@ async function leaveCall(update = true) {
   tiles.clear();
   window.removeEventListener('beforeunload', markLeft);
   renderDock();
+  clearSentSignals(ref);
   if (update) {
     await ref.collection('peers').doc(myUid()).update({ leftAt: Date.now() }).catch(() => {});
     if (!othersLeft) await endCall(id, ref); // 마지막 사람이 나가면 회의를 끝내고 요약한다
@@ -121,17 +122,69 @@ async function leaveCall(update = true) {
   render();
 }
 
-// 회의 끝내기: 녹취를 모아 요약을 저장한다. 참여 중인 사람들은 자동으로 나가진다.
+// 상대가 못 받은 연결 정보(주소 포함)는 보낸 사람이 나갈 때 치운다
+function clearSentSignals(ref) {
+  ref.collection('signals').where('from', '==', myUid()).get().then(snap => deleteDocs(snap.docs)).catch(() => {});
+}
+
+// 회의 끝내기: 여러 사람이 동시에 끝내도 요약(AI 비용)은 한 번만. 상태를 먼저 바꾼 사람이 요약한다.
+// 참여 중인 사람들은 상태가 바뀌면 자동으로 나가진다.
 async function endCall(id, c = callsRef().doc(id)) {
   try {
-    const [lines, peers] = await Promise.all([c.collection('lines').orderBy('at').get(), c.collection('peers').get()]);
-    const ls = lines.docs.map(d => d.data());
-    const attendees = [...new Set(peers.docs.map(d => d.data().name))];
-    const { summary, summaryBy } = await meetingSummary(ls, attendees);
-    await c.update({ status: 'ended', endedAt: Date.now(), summary, summaryBy, attendees, lineCount: ls.length });
+    const won = await db.runTransaction(async tx => {
+      const snap = await tx.get(c);
+      if (!snap.exists || snap.data().status !== 'live') return false;
+      tx.update(c, { status: 'ended', endedAt: Date.now(), closedBy: myUid() });
+      return true;
+    });
+    if (won) await writeCallSummary(c);
   } catch (e) {
     writeFailed(e);
   }
+}
+
+async function writeCallSummary(c) {
+  const [lines, peers] = await Promise.all([c.collection('lines').orderBy('at').get(), c.collection('peers').get()]);
+  const ls = lines.docs.map(d => d.data());
+  const attendees = [...new Set(peers.docs.map(d => d.data().name))];
+  const { summary, summaryBy, decisions } = await meetingSummary(ls, attendees);
+  await c.update({ summary, summaryBy, decisions, attendees, lineCount: ls.length });
+}
+
+// 아무도 안 남았는데 '진행 중'인 회의 정리: 브라우저가 꺼졌거나 두 사람이 동시에 나가면 생긴다.
+// 서버가 없으므로 방을 열어 둔 팀원 누구나 대신 끝낸다 (2분마다 확인, endCall이 한 번만 요약).
+const CALL_ABANDONED_MS = 2 * 60 * 1000;
+let callSweepAt = 0;
+let callSweepTeam = null;
+
+function scheduleCallSweep() {
+  const now = Date.now();
+  if (callSweepTeam === cloud.teamId && now - callSweepAt < CALL_ABANDONED_MS) return;
+  callSweepTeam = cloud.teamId;
+  callSweepAt = now;
+  setTimeout(() => sweepCalls().catch(e => console.warn('회의 정리 실패', e)), 5000);
+}
+
+async function sweepCalls() {
+  if (!cloudOn() || !Array.isArray(state?.calls)) return;
+  const now = Date.now();
+  const col = callsRef();
+  for (const c of state.calls) {
+    if (c.id === call.id) continue;
+    if (c.status === 'live' && now - c.startedAt > CALL_ABANDONED_MS) {
+      const peers = await col.doc(c.id).collection('peers').get();
+      const someone = peers.docs.some(d => !d.data().leftAt && now - d.data().beat < CALL_ABANDONED_MS);
+      if (!someone) await endCall(c.id, col.doc(c.id));
+    } else if (c.status === 'ended' && c.summary == null && now - (c.endedAt || 0) > CALL_ABANDONED_MS) {
+      await writeCallSummary(col.doc(c.id)); // 요약하던 사람의 브라우저가 꺼진 경우
+    }
+  }
+}
+
+// 회의 기록 전체 삭제 (녹취 포함). 회의를 시작한 사람과 팀장만 (규칙이 강제)
+async function eraseCallDocs(ref) {
+  for (const sub of ['lines', 'peers', 'signals']) await deleteDocs((await ref.collection(sub).get()).docs);
+  await ref.delete();
 }
 
 // ---------- 연결 (WebRTC) ----------
@@ -276,11 +329,12 @@ function saveLine(text) {
 
 async function meetingSummary(lines, attendees) {
   const rule = summarizeMeeting(lines, attendees);
-  if (!lines.length) return { summary: rule, summaryBy: 'rule' };
+  const said = lines.map(l => l.text.trim()).filter(t => t.length >= 6 && DECISION_PATTERN.test(t)).slice(0, 5);
+  if (!lines.length) return { summary: rule, summaryBy: 'rule', decisions: [] };
   const ai = await aiSummarize('meeting', lines.map(l => `${l.name}: ${l.text}`).join('\n'));
-  if (!ai) return { summary: rule, summaryBy: 'rule' };
+  if (!ai) return { summary: rule, summaryBy: 'rule', decisions: said };
   // 참석·발언 수 같은 사실은 규칙 기반 첫 두 줄을 그대로 쓴다
-  return { summary: formatAiSummary(ai, rule.split('\n').slice(0, 2)), summaryBy: 'ai' };
+  return { summary: formatAiSummary(ai, rule.split('\n').slice(0, 2)), summaryBy: 'ai', decisions: ai.decisions };
 }
 
 // 말로 한 문장이라 "~할게요", "~입니다", "~하기" 같은 말끝과 개인정보 가림 표시는 키워드에서 뺀다
@@ -384,7 +438,7 @@ async function syncMyTalks() {
     const item = analyze({
       id, memberId: state.meId, type: 'talk', title: `${c.title}에서 내가 한 말`, content,
       url: '', createdAt: c.endedAt || Date.now(), visibility: 'team', table: null, votes: [],
-      talk: { callId: c.id, lineCount: lines.length, keywords, transcript: transcript.length > 6000 ? `${transcript.slice(0, 6000)}\n…(이하 생략)` : transcript },
+      talk: { callId: c.id, lineCount: lines.length, keywords, transcript: transcript.length > 6000 ? `${transcript.slice(0, 6000)}\n…(이하 생략)` : transcript, ...(ai ? { decisions: ai.decisions } : {}) },
     });
     item.keywords = keywords.slice(0, 6); // 자동 분석 대신 발언 키워드로 (회의실 추천 연결에도 쓰임)
     state.items.push(item);
@@ -547,8 +601,9 @@ function renderMeetings() {
         <header><b>${c.source === 'meet' ? '📥 ' : ''}${esc(c.title)}</b>
           <span class="muted sm">${fmtDate(c.startedAt)} · 약 ${Math.max(1, Math.round(((c.endedAt || c.startedAt) - c.startedAt) / 60000))}분 · 녹취 ${c.lineCount ?? 0}줄</span></header>
         <label class="check sm"><input type="checkbox" data-mt="share:${c.id}" ${c.shareProf ? 'checked' : ''}> 🎓 교수자에게 이 회의 <b>요약</b> 공유 <span class="muted">(녹취 원문은 공유하지 않아요)</span></label>
-        <details open><summary>요약</summary><pre class="call-summary">${esc(c.summary || '요약이 없어요.')}</pre></details>
+        <details open><summary>요약</summary><pre class="call-summary">${esc(c.summary || (Date.now() - (c.endedAt || 0) < CALL_ABANDONED_MS ? '요약하는 중…' : '요약이 없어요.'))}</pre></details>
         <details data-lines="${c.id}"><summary>전체 녹취록</summary><div class="call-lines">${pastLinesHTML(c.id)}</div></details>
+        ${c.startedBy === myUid() || cloud.owner ? `<div class="modal-actions"><button class="btn ghost sm danger" data-mt="erase:${c.id}">🗑️ 이 회의 기록 지우기</button></div>` : ''}
       </article>`).join('') || '<p class="muted">아직 끝난 회의가 없어요.</p>'}</div>
   </section>`;
 }
@@ -586,6 +641,11 @@ document.addEventListener('click', e => {
     callsRef().doc(arg).update({ shareProf: !c.shareProf })
       .then(() => toast(!c.shareProf ? '🎓 교수자에게 이 회의 요약을 공유했어요' : '교수자 공유를 껐어요'))
       .catch(e => writeFailed(e, '회의 공유 설정'));
+    return;
+  }
+  if (act === 'erase') {
+    if (!confirm('이 회의의 요약과 녹취 원문을 모두 지울까요? 되돌릴 수 없어요.\n(각자 방에 담긴 "내가 한 말" 기록은 각자 지울 수 있어요)')) return;
+    eraseCallDocs(callsRef().doc(arg)).then(() => { pastLines.delete(arg); toast('회의 기록을 지웠어요'); }).catch(e => writeFailed(e, '회의 기록 삭제'));
     return;
   }
   if (act === 'mic') {
