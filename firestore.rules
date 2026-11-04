@@ -1,24 +1,44 @@
 rules_version = '2';
 
 // BrainRoom Firestore 보안 규칙
-// Firebase 콘솔 → Firestore Database → 규칙 탭에 이 내용을 붙여넣고 [게시]하세요.
+// 게시: 저장소 루트에서 `npx firebase-tools deploy --only firestore:rules`
+//       또는 Firebase 콘솔 → Firestore Database → 규칙 탭에 붙여넣고 [게시]
+// 시험: tests/rules/rules.test.mjs (에뮬레이터로 실제 규칙을 돌린다)
 //
 // - 팀원(student)과 교수자(prof)는 teams/{t}/members/{uid} 역할 문서로 구분한다.
 //   역할 문서는 비밀 초대 코드가 맞을 때만 만들 수 있다. (RQ-1, ONRQ-5)
+// - 명단의 팀원 한 명은 계정 하나만 쓴다: claims/{memberId} 를 먼저 만든 계정이 그 팀원이다.
 // - 기록(items)은 공유 범위대로만 읽힌다: 나만 = 본인, 팀 = 팀원, 교수자까지 = 팀원+교수자. (RQ-6)
 // - 교수자는 itemMeta로 횟수·목적만 보고, 원문은 '교수자까지' 기록만 본다. (RQ-11, RQ-12)
+// - 방 삭제는 두 단계다: 팀장이 deleting 표시 → 하위 문서 삭제 → 팀 문서 삭제.
+//   평소에는 지울 수 없는 변경 이력 등도 이 표시가 있을 때만 팀장이 지운다.
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
     function teamPath(t) { return /databases/$(database)/documents/teams/$(t); }
     function rolePath(t) { return /databases/$(database)/documents/teams/$(t)/members/$(request.auth.uid); }
+    function claimPath(t, m) { return /databases/$(database)/documents/teams/$(t)/claims/$(m); }
     function hasRole(t, r) { return signedIn() && exists(rolePath(t)) && get(rolePath(t)).data.role == r; }
     function isMember(t) { return hasRole(t, 'student'); }
     function isProf(t) { return hasRole(t, 'prof'); }
     function isOwner(t) { return signedIn() && get(teamPath(t)).data.ownerUid == request.auth.uid; }
+    function tearingDown(t) { return isOwner(t) && get(teamPath(t)).data.get('deleting', false) == true; }
     function onlyKeys(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function changed(key) { return request.resource.data.diff(resource.data).affectedKeys().hasAny([key]); }
     function secretCode(t, kind) { return get(/databases/$(database)/documents/teams/$(t)/secrets/$(kind)).data.code; }
+    function str(v, max) { return v is string && v.size() <= max; }
+    function ownsClaimAfter(t, m) { return getAfter(claimPath(t, m)).data.uid == request.auth.uid; }
+
+    // 기록 내용의 최소 검사 (Firestore 문서 한도 1MB 안에서 한 사람이 방을 망가뜨리지 못하게)
+    function validRecord(d) {
+      return d.visibility in ['me', 'team', 'prof']
+        && d.type in ['link', 'memo', 'idea', 'ai', 'talk', 'work', 'search']
+        && str(d.title, 1000)
+        && str(d.get('content', ''), 50000)
+        && str(d.get('url', ''), 4000)
+        && d.createdAt is number;
+    }
 
     // 새 기록: 본인이 작성자이고 명단에서 고른 자기 팀원 id로만 쓸 수 있다.
     // 예외: 기여 보정 요청을 다른 팀원이 확인해 '빠진 기여'를 추가할 때 (RQ-14)
@@ -38,55 +58,92 @@ service cloud.firestore {
               && request.resource.data.ownerUid == request.auth.uid && isOwner(t));
     }
 
+    // 회의를 시작한 사람과 팀장은 회의 기록을 통째로 지울 수 있다 (녹취 원문 포함)
+    function canEraseCall(t, c) {
+      return isOwner(t)
+        || (isMember(t) && get(/databases/$(database)/documents/teams/$(t)/calls/$(c)).data.startedBy == request.auth.uid);
+    }
+
     match /users/{uid} {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
 
     match /teams/{t} {
-      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid
+        && !('deleting' in request.resource.data);
       allow read: if isMember(t) || isProf(t);
-      allow update: if isMember(t) && onlyKeys(['teamName', 'course', 'members', 'decisionDismissed', 'links']);
+      allow update: if (isMember(t) && onlyKeys(['teamName', 'course', 'members', 'decisionDismissed', 'links']))
+        // 팀장 넘기기: 받는 사람은 이미 이 방의 팀원이어야 한다
+        || (isOwner(t) && onlyKeys(['ownerUid'])
+            && get(/databases/$(database)/documents/teams/$(t)/members/$(request.resource.data.ownerUid)).data.role == 'student')
+        // 방 삭제 시작 (되돌리는 것도 가능)
+        || (isOwner(t) && onlyKeys(['deleting']));
       allow delete: if isOwner(t);
 
-      // 초대 코드: 팀원 코드는 팀원이, 교수자 코드는 팀장만 읽는다
+      // 초대 코드: 팀원 코드는 팀원이, 교수자 코드는 팀장만 읽는다. 다시 발급(옛 링크 무효)은 팀장만
       match /secrets/{kind} {
         allow create: if signedIn() && getAfter(teamPath(t)).data.ownerUid == request.auth.uid;
         allow read: if (kind == 'student' && isMember(t)) || (kind == 'prof' && isOwner(t));
+        allow update: if isOwner(t) && onlyKeys(['code']) && str(request.resource.data.code, 100) && request.resource.data.code.size() >= 16;
+        allow delete: if tearingDown(t);
+      }
+
+      // 명단의 팀원 한 명 = 계정 하나. 이미 있는 문서는 다시 만들 수 없어서 먼저 고른 사람만 그 팀원이 된다
+      match /claims/{memberId} {
+        allow read: if isMember(t);
+        allow create: if signedIn() && request.resource.data.uid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['uid', 'at'])
+          && getAfter(rolePath(t)).data.role == 'student'
+          && getAfter(rolePath(t)).data.memberId == memberId;
+        allow delete: if signedIn() && (resource.data.uid == request.auth.uid || isOwner(t));
       }
 
       match /members/{uid} {
-        allow read: if signedIn() && request.auth.uid == uid;
+        // 본인, 그리고 방 관리를 하는 팀장
+        allow read: if signedIn() && (request.auth.uid == uid || isOwner(t));
         allow create: if signedIn() && request.auth.uid == uid
           && request.resource.data.uid == uid
-          && request.resource.data.keys().hasOnly(['uid', 'role', 'memberId', 'code', 'joinedAt'])
+          && request.resource.data.keys().hasOnly(['uid', 'role', 'memberId', 'code', 'joinedAt', 'name', 'email'])
+          && str(request.resource.data.get('name', ''), 100) && str(request.resource.data.get('email', ''), 200)
           && (
             // 팀을 만든 사람 (팀 문서와 같은 배치로 생성)
-            (request.resource.data.role == 'student' && getAfter(teamPath(t)).data.ownerUid == uid)
+            (request.resource.data.role == 'student' && getAfter(teamPath(t)).data.ownerUid == uid
+              && (request.resource.data.memberId == null || ownsClaimAfter(t, request.resource.data.memberId)))
             // 초대 링크로 참여: 역할에 맞는 코드가 있어야 하고, 팀원 연결은 나중에 한다
             || (request.resource.data.role in ['student', 'prof']
                 && request.resource.data.memberId == null
                 && request.resource.data.code == secretCode(t, request.resource.data.role))
           );
-        // 명단에서 자기 팀원을 고르는 것은 한 번만
+        // 명단에서 자기 팀원을 고르는 것은 한 번만, 그리고 그 팀원의 claim을 같은 배치에서 차지해야 한다
         allow update: if signedIn() && request.auth.uid == uid
-          && resource.data.memberId == null && onlyKeys(['memberId']);
-        allow delete: if signedIn() && request.auth.uid == uid;
+          && resource.data.memberId == null && onlyKeys(['memberId'])
+          && ownsClaimAfter(t, request.resource.data.memberId);
+        // 스스로 나가기 (팀장은 먼저 넘겨야 한다) / 팀장이 내보내기 / 방 삭제 중
+        allow delete: if signedIn() && (
+          (request.auth.uid == uid && !isOwner(t))
+          || (isOwner(t) && request.auth.uid != uid)
+          || tearingDown(t)
+        );
       }
 
       match /items/{id} {
         allow read: if (isMember(t) && (resource.data.visibility in ['team', 'prof'] || resource.data.ownerUid == request.auth.uid))
                     || (isProf(t) && resource.data.visibility == 'prof');
-        allow create: if isMember(t) && validNewRecord(t);
+        allow create: if isMember(t) && validNewRecord(t) && validRecord(request.resource.data);
         allow update: if isMember(t) && (
           // 작성자는 자기 기록을 고칠 수 있다 (작성자·팀원 id는 못 바꿈)
           (resource.data.ownerUid == request.auth.uid
             && request.resource.data.ownerUid == resource.data.ownerUid
-            && request.resource.data.memberId == resource.data.memberId)
-          // 다른 팀원은 공개된 기록에 투표·테이블 이동·분류 보정만
+            && request.resource.data.memberId == resource.data.memberId
+            && validRecord(request.resource.data))
+          // 다른 팀원은 공개된 기록에 투표·테이블 이동·분류 보정만.
+          // AI 대화 원문은 고칠 수 없다 (사용 목적만, 또는 보정으로 AI 대화가 새로 될 때)
           || (resource.data.visibility in ['team', 'prof']
-            && onlyKeys(['votes', 'table', 'type', 'themes', 'keywords', 'ai']))
+            && onlyKeys(['votes', 'table', 'type', 'themes', 'keywords', 'ai'])
+            && (!changed('ai') || resource.data.get('ai', null) == null
+                || request.resource.data.ai.diff(resource.data.ai).affectedKeys().hasOnly(['purpose'])))
         );
-        allow delete: if isMember(t) && resource.data.ownerUid == request.auth.uid;
+        allow delete: if (isMember(t) && resource.data.ownerUid == request.auth.uid) || tearingDown(t);
       }
 
       match /itemMeta/{id} {
@@ -98,65 +155,87 @@ service cloud.firestore {
             && request.resource.data.memberId == resource.data.memberId)
           || (resource.data.visibility in ['team', 'prof'] && onlyKeys(['type', 'purpose']))
         );
-        allow delete: if isMember(t) && resource.data.ownerUid == request.auth.uid;
+        allow delete: if (isMember(t) && resource.data.ownerUid == request.auth.uid) || tearingDown(t);
       }
 
       match /decisions/{id} {
         allow read: if isMember(t) || isProf(t);
-        allow write: if isMember(t);
+        allow create, update: if isMember(t) && str(request.resource.data.text, 5000);
+        allow delete: if isMember(t) || tearingDown(t);
       }
 
       match /quests/{id} {
-        allow read, write: if isMember(t);
+        allow read: if isMember(t);
+        allow create, update: if isMember(t) && str(request.resource.data.get('title', ''), 500);
+        allow delete: if isMember(t) || tearingDown(t);
       }
 
       match /corrections/{id} {
         allow read: if isMember(t);
         allow create: if isMember(t) && request.resource.data.requesterUid == request.auth.uid;
-        // 다른 팀원 한 명이 확인해야 반영된다
+        // 다른 팀원 한 명이 확인해야 반영된다. 확인자는 자기 자신으로만 남길 수 있다
         allow update: if isMember(t) && resource.data.requesterUid != request.auth.uid
-          && onlyKeys(['status', 'confirmedBy']);
-        allow delete: if isMember(t) && resource.data.requesterUid == request.auth.uid;
+          && onlyKeys(['status', 'confirmedBy'])
+          && request.resource.data.get('confirmedBy', null) == get(rolePath(t)).data.memberId;
+        allow delete: if (isMember(t) && resource.data.requesterUid == request.auth.uid) || tearingDown(t);
       }
 
       // 기여 보정 변경 이력: 추가만 가능
       match /logs/{id} {
         allow read: if isMember(t) || isProf(t);
-        allow create: if isMember(t);
+        allow create: if isMember(t) && str(request.resource.data.text, 2000);
+        allow delete: if tearingDown(t);
       }
 
       // 음성·화상 회의: 방 팀원만. 녹취 한 줄은 말한 본인만 쓸 수 있다
       match /calls/{c} {
         // 교수자는 팀이 '교수자에게 공유'한 회의만 (요약만 쓰고 녹취 lines는 못 읽는다)
         allow read: if isMember(t) || (isProf(t) && resource.data.shareProf == true);
-        allow create: if isMember(t) && request.resource.data.startedBy == request.auth.uid;
-        allow update: if isMember(t) && onlyKeys(['status', 'endedAt', 'summary', 'summaryBy', 'attendees', 'lineCount', 'shareProf']);
+        allow create: if isMember(t) && request.resource.data.startedBy == request.auth.uid
+          && request.resource.data.status in ['live', 'ended'] && str(request.resource.data.title, 200);
+        allow update: if isMember(t)
+          && onlyKeys(['status', 'endedAt', 'summary', 'summaryBy', 'attendees', 'lineCount', 'shareProf', 'decisions', 'closedBy'])
+          && request.resource.data.status in ['live', 'ended']
+          // 끝난 회의를 다시 열 수 없다
+          && !(resource.data.status == 'ended' && request.resource.data.status != 'ended')
+          && (request.resource.data.get('summary', null) == null || str(request.resource.data.summary, 50000));
+        allow delete: if canEraseCall(t, c);
 
         match /peers/{uid} {
           allow read: if isMember(t);
           allow create, update: if isMember(t) && request.auth.uid == uid;
+          allow delete: if canEraseCall(t, c);
         }
-        // 연결 정보: 보낸 사람이 만들고, 받는 사람만 읽고 지운다
+        // 연결 정보: 보낸 사람이 만들고, 받는 사람만 읽고 지운다. 못 받은 신호는 보낸 사람이 나갈 때 치운다
         match /signals/{s} {
           allow create: if isMember(t) && request.resource.data.from == request.auth.uid;
-          allow read, delete: if isMember(t) && resource.data.to == request.auth.uid;
+          allow read, delete: if (isMember(t) && (resource.data.to == request.auth.uid || resource.data.from == request.auth.uid))
+                              || canEraseCall(t, c);
         }
         match /lines/{l} {
           allow read: if isMember(t);
-          allow create: if isMember(t) && request.resource.data.uid == request.auth.uid;
+          allow create: if isMember(t) && request.resource.data.uid == request.auth.uid && str(request.resource.data.text, 5000);
+          // 내가 한 말은 내가 지울 수 있다. 회의 전체 삭제는 시작한 사람·팀장
+          allow delete: if (isMember(t) && resource.data.uid == request.auth.uid) || canEraseCall(t, c);
         }
       }
 
-      // 실시간 접속 표시 (RQ-8): 본인 것만 쓰고 팀원이 읽는다
+      // 실시간 접속 표시 (RQ-8): 본인 것만 쓰고 팀원이 읽는다. 다른 팀원 이름으로는 표시할 수 없다
       match /presence/{uid} {
         allow read: if isMember(t);
-        allow write: if isMember(t) && request.auth.uid == uid;
+        allow create, update: if isMember(t) && request.auth.uid == uid
+          && (request.resource.data.memberId == null || request.resource.data.memberId == get(rolePath(t)).data.memberId);
+        allow delete: if (isMember(t) && request.auth.uid == uid) || tearingDown(t);
       }
 
       // 권한 없는 접근 시도 기록 (ONRQ-5): 누구나 남길 수 있고 팀장만 읽는다
       match /accessLogs/{id} {
-        allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+        allow create: if signedIn() && request.resource.data.uid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['uid', 'email', 'what', 'at'])
+          && str(request.resource.data.get('what', ''), 40)
+          && request.resource.data.get('email', '') == request.auth.token.get('email', '');
         allow read: if isOwner(t);
+        allow delete: if tearingDown(t);
       }
     }
   }

@@ -1,0 +1,15 @@
+{
+  "name": "brainroom-tests",
+  "private": true,
+  "type": "module",
+  "description": "규칙(에뮬레이터)·단위·브라우저 시험. 앱 자체는 빌드·의존성이 없다",
+  "scripts": {
+    "rules": "firebase emulators:exec --only firestore --config ../firebase.json --project demo-brainroom \"node rules/rules.test.mjs\"",
+    "unit": "node run-unit.mjs"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^6.0.0",
+    "firebase": "^13.0.0",
+    "firebase-tools": "^14.0.0"
+  }
+}
