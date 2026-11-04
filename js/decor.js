@@ -204,7 +204,7 @@ const DECOR = [
   },
   {
     id: 'robot', name: '로봇 피규어', place: 'desk',
-    words: ['ai', '인공지능', '챗봇', 'gpt', 'llm', '클로드', '챗지피티', '머신러닝', '딥러닝', '자동화', 'ai', 'gpt', 'llm', 'claude', 'chatbot', 'openai', 'gemini'],
+    words: ['ai', '인공지능', '챗봇', '머신러닝', '딥러닝', '자동화', '로봇', 'chatbot', 'robot'], // 도구 이름(GPT·Claude 등)은 주제가 아니라 빼 둔다 (AI_TOOL_WORDS)
     draw: (x, y, z) => [
       cbox(x, y, z, 0.18, 0.14, 9, '#94a3b8'), cbox(x, y, z + 9, 0.16, 0.13, 8, '#cbd5e1'), cbox(x, y, z + 17, 0.02, 0.02, 5, '#ef4444'),
       isoDot(x - 0.03, y + 0.066, z + 13, 1.6, 1.6, '#0f172a'), isoDot(x + 0.03, y + 0.066, z + 13, 1.6, 1.6, '#0f172a'),
@@ -361,11 +361,27 @@ function micStand(x, y, n) {
 // 자동 분류된 주제(js/themes.js) → 물품
 const THEME_DECOR = {
   eco: 'plant', food: 'bento', edu: 'books', money: 'piggy', health: 'gym', travel: 'globe', music: 'speaker', game: 'gamepad',
-  ai: 'robot', pet: 'pet', fashion: 'rack', mobility: 'bike', home: 'sofa', social: 'beanbag', commerce: 'bags', energy: 'lamp',
+  ai: 'chart', pet: 'pet', fashion: 'rack', mobility: 'bike', home: 'sofa', social: 'beanbag', commerce: 'bags', energy: 'lamp',
   farm: 'plant', science: 'microscope', media: 'camera', art: 'art', welfare: 'donation', safety: 'safe', career: 'briefcase', sports: 'gym',
 };
 
+// AI 도구 이름은 '무엇을 썼는지'일 뿐 아이디어 주제가 아니다 → 물품을 고르는 키워드에서 뺀다
+// (AI 대화를 담을 때마다 로봇만 늘어나지 않게. 'AI 챗봇 서비스'처럼 내용이 AI를 다루면 '인공지능·챗봇' 등으로 여전히 로봇이 된다)
+const AI_TOOL_WORDS = new Set(['gpt', 'chatgpt', '챗gpt', '챗지피티', '지피티', 'claude', '클로드', 'gemini', '제미나이', 'openai', '오픈ai', 'llm', 'copilot', '코파일럿', 'perplexity', '퍼플렉시티']);
+
+function isAiToolWord(word) {
+  const w = (word || '').toLowerCase().replace(/[\s\-_.]/g, '');
+  return AI_TOOL_WORDS.has(w) || /^(gpt|claude|gemini)\d/.test(w);
+}
+
+// AI 대화·검색은 도구를 쓴 흔적이라 'ai'라는 말 자체도 주제로 보지 않는다
+function decorWords(item, words) {
+  const viaTool = item.type === 'ai' || item.type === 'search';
+  return words.filter(w => !isAiToolWord(w) && !(viaTool && /^(ai|에이아이)$/i.test(String(w).trim())));
+}
+
 // 기록 하나가 어떤 물품으로 이어지는지 → Map(물품 id → 그 물품이 된 키워드들)
+// 기록 속 키워드가 먼저, 주제 분류는 키워드로 물품이 하나도 안 나올 때만 채운다
 function itemDecorIds(item) {
   const out = new Map();
   const add = (id, word) => { if (!DECOR_BY_ID[id]) return; if (!out.has(id)) out.set(id, new Set()); if (word) out.get(id).add(word); };
@@ -377,8 +393,12 @@ function itemDecorIds(item) {
   const words = item.type === 'talk' && typeof talkKeywords === 'function' ? talkKeywords(item)
     : item.type === 'work' && typeof workKeywords === 'function' ? workKeywords(item)
     : (item.keywords || []);
-  words.forEach(w => { const d = decorFor(w); if (d) add(d.id, w); });
-  (item.themes || []).forEach(t => add(THEME_DECOR[t], THEME_BY_ID[t]?.name));
+  const before = out.size;
+  decorWords(item, words).forEach(w => { const d = decorFor(w); if (d) add(d.id, w); });
+  if (out.size === before) {
+    const viaTool = item.type === 'ai' || item.type === 'search';
+    (item.themes || []).filter(t => !(viaTool && t === 'ai')).forEach(t => add(THEME_DECOR[t], THEME_BY_ID[t]?.name));
+  }
   return out;
 }
 

@@ -315,6 +315,9 @@ function sanitizeForProf(ws) {
     }),
     decisions: (ws.decisions || []).map(d => ({ id: d.id, text: d.text, sourceIds: d.sourceIds, createdAt: d.createdAt })),
     changeLog: ws.changeLog || [],
+    // 교수자에게 공유한 회의 요약 (원문 녹취는 빼고 요약만)
+    calls: (ws.calls || []).filter(c => c.shareProf && c.status === 'ended')
+      .map(c => ({ title: c.title, startedAt: c.startedAt, endedAt: c.endedAt, summary: c.summary, attendees: c.attendees || [] })),
   };
 }
 
@@ -334,6 +337,11 @@ function logAccess(view) {
 }
 
 // ---------- 활동 상태 문구 (RQ-8, UI-3: 색 말고 글자로도) ----------
+
+// 지금 접속 중인지 (온라인 방에서만 알 수 있음)
+function isOnline(memberId) {
+  return Boolean(state?.online?.has(memberId));
+}
 
 function activityStatus(p) {
   if (!p.items.length) return '기록 없음';

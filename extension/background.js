@@ -24,19 +24,61 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (res?.conversation) enqueue(res.conversation);
 });
 
-async function enqueue(conversation) {
-  const queue = (await getQueue()).filter(q => q.conversation.sourceId !== conversation.sourceId); // 같은 대화는 최신 것만
-  queue.push({ id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, conversation });
+const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+// 저장소를 '읽고 → 고치고 → 저장'하는 작업은 한 줄로 세워 차례로 한다
+// (결과를 빠르게 여러 개 누르면 동시에 저장하다 한쪽이 덮어써 사라지는 문제를 막는다)
+let storageChain = Promise.resolve();
+const serial = fn => (...args) => (storageChain = storageChain.then(() => fn(...args), () => fn(...args)));
+
+const enqueue = serial(async conversation => {
+  const queue = (await getQueue()).filter(q => q.conversation?.sourceId !== conversation.sourceId); // 같은 대화는 최신 것만
+  queue.push({ id: newId(), kind: 'ai', conversation });
   await setQueue(queue.slice(-30));
   await updateBadge();
   await deliver();
-}
+});
 
+// 보낼 것이 있으면 개수, 탐색 기록이 켜져 있으면 ON
 async function updateBadge() {
   const n = (await getQueue()).length;
-  await chrome.action.setBadgeText({ text: n ? String(n) : '' });
-  await chrome.action.setBadgeBackgroundColor({ color: '#4f46e5' });
+  const { exploring } = await chrome.storage.local.get({ exploring: false });
+  await chrome.action.setBadgeText({ text: n ? String(n) : exploring ? 'ON' : '' });
+  await chrome.action.setBadgeBackgroundColor({ color: n ? '#4f46e5' : '#047857' });
 }
+
+// ---------- 검색 기록 (탐색 기록을 켠 동안만, 이 브라우저에만) ----------
+const getSearchLog = async () => (await chrome.storage.local.get({ searchLog: [] })).searchLog;
+const setSearchLog = log => chrome.storage.local.set({ searchLog: log.slice(-200) });
+
+const noteSearch = serial(async ({ engine, query, url }) => {
+  const log = await getSearchLog();
+  const recent = log.find(s => s.engine === engine && s.query === query && Date.now() - s.at < 30 * 60 * 1000);
+  if (recent) recent.at = Date.now();
+  else log.push({ id: newId(), engine, query, url, at: Date.now(), clicks: [] });
+  await setSearchLog(log);
+});
+
+const noteClick = serial(async ({ engine, query, title, url }) => {
+  const log = await getSearchLog();
+  let s = [...log].reverse().find(x => x.engine === engine && x.query === query);
+  if (!s) { s = { id: newId(), engine, query, url: '', at: Date.now(), clicks: [] }; log.push(s); }
+  if (!s.clicks.some(c => c.url === url)) s.clicks.push({ title, url, at: Date.now() });
+  s.clicks = s.clicks.slice(-10);
+  await setSearchLog(log);
+});
+
+const sendSearches = serial(async ids => {
+  const log = await getSearchLog();
+  const picked = log.filter(s => ids.includes(s.id));
+  const queue = await getQueue();
+  picked.forEach(s => queue.push({ id: newId(), kind: 'search', search: s }));
+  await setQueue(queue.slice(-60));
+  await setSearchLog(log.filter(s => !ids.includes(s.id))); // 보낸 것은 확장에서 지운다
+  await updateBadge();
+  await deliver();
+  return picked.length;
+});
 
 async function appUrl() {
   const { appTarget } = await chrome.storage.local.get({ appTarget: 'github' });
@@ -82,6 +124,23 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       reply({ ok: true });
     } else if (msg.type === 'clear') {
       await setQueue([]);
+      await updateBadge();
+      reply({ ok: true });
+    } else if (msg.type === 'search-query') {
+      await noteSearch(msg);
+      reply({ ok: true });
+    } else if (msg.type === 'search-click') {
+      await noteClick(msg);
+      reply({ ok: true });
+    } else if (msg.type === 'search-list') {
+      reply({ log: await getSearchLog() });
+    } else if (msg.type === 'search-send') {
+      reply({ sent: await sendSearches(msg.ids) });
+    } else if (msg.type === 'search-clear') {
+      await setSearchLog([]);
+      reply({ ok: true });
+    } else if (msg.type === 'set-exploring') {
+      await chrome.storage.local.set({ exploring: msg.on });
       await updateBadge();
       reply({ ok: true });
     }

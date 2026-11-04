@@ -275,7 +275,7 @@ function renderOffice() {
           ${roomHTML(m.id, { mini: true })}
           <div class="rc-info">
             <b>${esc(m.name)}</b>${m.id === state.meId ? '<span class="badge">나</span>' : ''}
-            <span class="muted">${activityStatus(p)} · 기록 ${p.items.length}개</span>
+            <span class="muted">${isOnline(m.id) ? '<b class="online">● 접속 중</b> · ' : ''}${activityStatus(p)} · 기록 ${p.items.length}개</span>
           </div>
           <div class="decor-row">${p.decor.slice(0, 7).map(g => `<span class="decor-mini" title="${esc(g.decor.name)}">${decorThumbSVG(g.decor)}</span>`).join('')
             || '<span class="muted sm">아직 물품 없음</span>'}</div>
@@ -306,7 +306,7 @@ function renderRoom(memberId) {
     <div class="page-head">
       <div>
         <button class="btn ghost sm" data-go="meeting">← 회의실</button>
-        <h1 style="--mc:${m.color}" class="room-title">${esc(m.name)}의 방 <span class="badge">${activityStatus(p)}</span></h1>
+        <h1 style="--mc:${m.color}" class="room-title">${esc(m.name)}의 방 <span class="badge">${activityStatus(p)}</span>${isOnline(m.id) ? ' <span class="badge online-badge">● 접속 중</span>' : ''}</h1>
       </div>
       <div class="room-nav">
         ${state.members.filter(o => o.id !== memberId).map(o =>
@@ -734,6 +734,7 @@ function render() {
   if (!isProfView()) scheduleWorkSync(); // 연동 도구에서 새 작업 가져오기 (15분마다)
   if (extPending.length) showExtPending(); // 방에 들어오기 전에 확장에서 받은 대화
   requestAnimationFrame(fitDecorThumbs); // 물품 그림을 칸 크기에 맞게
+  finishOAuthIfPending(); // OAuth 승인 화면에서 돌아왔으면 토큰 교환
 }
 
 // ---------- 이벤트 ----------

@@ -513,6 +513,17 @@ details > summary { cursor: pointer; }
 .gate-foot { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 @media (max-width: 480px) { .gate { grid-template-columns: 1fr; } }
 
+/* Meet 녹취록 가져오기 */
+.meet-import { margin-top: 16px; }
+.meet-map { display: grid; gap: 8px; max-height: 40vh; overflow-y: auto; }
+.meet-map label { display: grid; gap: 4px; }
+.meet-map select { width: 100%; }
+
+/* 접속 중 (색 + 글자) */
+.online { color: #15803d; }
+.badge.online-badge { background: #dcfce7; color: #166534; }
+.prof-call { margin: 6px 0; }
+
 /* 🧸 방의 물품 (글 대신 그림) */
 .decor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; }
 .decor-thumb {
@@ -529,6 +540,7 @@ details > summary { cursor: pointer; }
 .decor-mini { width: 34px; height: 34px; background: #f8f6f2; border-radius: 8px; padding: 3px; }
 
 /* 🔌 연동 */
+.ai-card { border-top: 4px solid var(--primary); }
 .integ-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; margin-bottom: 16px; }
 .integ header { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .integ h2 { margin: 0; }

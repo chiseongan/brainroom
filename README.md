@@ -40,11 +40,45 @@ Google 로그인 설정을 마친 뒤 이어서 하면, 팀원끼리 실시간�
 - 로그인 후 시작 화면에서 **샘플 팀 / 이 브라우저에 있던 팀 / 워크스페이스 파일**을 새 온라인 팀으로 올릴 수 있습니다. 내가 아닌 팀원 이름으로 된 기록은 **📥 가져온 기록**으로 표시되고 올린 사람이 관리합니다.
 - ⚙️ 메뉴 → **🚪 이 팀에서 나가기**: 내 계정만 빠지고 팀 데이터는 남습니다. 초대 링크로 다시 들어올 수 있습니다.
 
+## Google Meet 녹취록 가져오기 설정 (Drive에서 고르기를 쓸 때)
+"파일 올리기"(.txt·.vtt)는 설정 없이 됩니다. "Google Drive에서 고르기"를 쓰려면 Google Cloud 콘솔(프로젝트 `brainroom-777b0`)에서 한 번 설정하세요.
+1. **API 및 서비스 → 라이브러리**에서 **Google Picker API**와 **Google Drive API** 사용 설정
+2. **사용자 인증 정보**의 브라우저 API 키(Firebase가 만든 키)에 API 제한이 걸려 있으면 두 API를 허용 목록에 추가
+3. **OAuth 동의 화면**에 범위 `https://www.googleapis.com/auth/drive.file` 추가 (앱이 테스트 모드면 쓸 사람을 테스트 사용자로 추가)
+
+`drive.file`은 사용자가 Picker에서 **고른 파일만** 읽는 권한입니다.
+
+## 프록시 서버 (선택): AI 정리 · Figma 그림 인식 · 계정으로 연결 · 회의 중계 (`worker/`)
+브라우저에 둘 수 없는 비밀 값(Anthropic API 키, OAuth client secret, TURN 키)을 대신 쥐는 작은 서버입니다. **없어도 앱은 규칙 기반으로 그대로 동작**하고, 배포하면 아래가 켜집니다.
+
+| 기능 | 내용 |
+|---|---|
+| 🤖 AI 정리 | 회의 요약, 내가 한 말 요약, AI 대화 요약·사용 목적·키워드를 소형 모델(Claude Haiku 5.5)로. 키워드는 방 물품이 됨 |
+| 🎨 Figma 그림 인식 | 글자 없는 화면도 첫 화면 몇 장을 그림으로 보고 주제 키워드 추출 |
+| 🔗 계정으로 연결 | 토큰 붙여넣기 대신 Notion·Figma·GitHub 승인 화면으로 연결 (Notion은 '나는 누구'도 자동) |
+| 📞 회의 중계 서버 | Cloudflare Realtime TURN으로 학교·회사망처럼 직접 연결이 막힌 곳에서도 회의 |
+
+- **로그인한 사용자만** 쓸 수 있습니다 (Firebase 로그인 토큰의 서명·대상·만료를 서버가 확인).
+- **비용 상한 (SSRD PR-1)**: 사용자별 하루 요청 수, 월 예산(기본 5만 원)을 넘으면 거절하고 앱은 규칙 기반으로 돌아갑니다. 정확한 집계에는 KV 저장소를 연결하세요.
+- **연동 토큰은 암호화해 보관**합니다 (LS-6, 프록시와 상관없이 항상): 브라우저 안의 꺼낼 수 없는 키로 암호화한 값만 저장.
+- 🔌 연동 화면의 **AI 정리 쓰기**를 끄면 그 브라우저는 AI를 쓰지 않습니다.
+
+배포
+1. `cd worker && npm install && npx wrangler login`
+2. 비밀 값 넣기 (쓰는 것만): `npx wrangler secret put ANTHROPIC_API_KEY` · `NOTION_CLIENT_SECRET` · `FIGMA_CLIENT_SECRET` · `GITHUB_CLIENT_SECRET` · `TURN_KEY_ID` · `TURN_KEY_API_TOKEN`
+3. `wrangler.toml`의 `NOTION_CLIENT_ID` 등 공개 client id, `ALLOWED_ORIGINS`(BrainRoom 주소) 확인. 예산 집계용 KV를 쓰려면 주석의 `[[kv_namespaces]]` 설정
+4. `npx wrangler deploy` → 나온 주소를 `js/ai-config.js`의 `PROXY_URL`에 넣기
+5. OAuth를 쓰면 각 서비스의 OAuth 앱 설정에 **돌아올 주소(redirect URI)** 로 BrainRoom 주소(예: `https://chiseongan.github.io/brainroom/`)를 등록
+
+시험: `node worker/test/proxy.test.mjs` (실제 Worker 코드와 Anthropic SDK, 바깥 서비스는 가짜)
+
 ## Chrome 확장: AI 대화 담기 (`extension/`)
 ChatGPT·Claude·Gemini 화면 오른쪽 아래 **🧠 BrainRoom에 담기** 버튼(또는 오른쪽 클릭 메뉴)으로 지금 보고 있는 대화를 BrainRoom으로 보냅니다. 글을 드래그해 선택한 상태면 그 부분만 보냅니다.
 - 서버로 보내지 않고 **열려 있는 BrainRoom 탭으로만** 전달합니다. 탭이 없으면 새로 엽니다.
 - BrainRoom에서는 **AI 대화 불러오기 창**이 떠서 고른 대화만 저장합니다(개인정보 가리기·공유 범위 그대로). 원래 대화 주소가 근거 링크로 남습니다.
 - 각 사이트의 화면 구조를 읽는 방식이라 사이트가 화면을 바꾸면 못 읽을 수 있습니다. 그때는 글을 선택해서 보내거나 내보내기 파일을 쓰세요.
+
+**🔍 탐색 기록 (검색 기록 담기)**: 확장 창에서 켠 동안만 구글·네이버의 검색어와 누른 결과(제목·주소)를 이 브라우저에 모읍니다. 켜져 있으면 검색 화면 오른쪽 아래에 "탐색 기록 중" 표시가 뜹니다. 확장 창에서 고른 것만 BrainRoom으로 보내고, 기본 공유 범위는 '나만'입니다. 페이지 내용은 읽지 않습니다.
 
 설치 (Chrome·Edge·웨일)
 1. 주소창에 `chrome://extensions` → 오른쪽 위 **개발자 모드** 켜기
@@ -70,6 +104,9 @@ ChatGPT·Claude·Gemini 화면 오른쪽 아래 **🧠 BrainRoom에 담기** 버
 | 🎙️ 회의 | 온라인 방 팀원끼리 음성·화상 회의 (브라우저 직접 연결, 4명 안팎 권장). 각자 자기 마이크를 받아써 발언자별 녹취록을 남기고, 회의가 끝나면 참석자·발언 수·키워드·주요 발언·정한 것으로 요약. 회의 중에도 다른 화면 이용 가능 (Chrome·Edge) |
 | 🎙️ 회의 발언 | 회의가 끝나면 각자 **내가 한 말**을 요약·키워드로 저장해 내 방에 담음. 방에 🎙️ 마이크 스탠드가 생기고, 키워드는 어울리는 **사물**로 놓임 (재활용 → 분리수거함, 교육 → 책상 위 교과서, 일정 → 벽 달력, 발표 → 연단 등 34종). 누르면 그 회의 요약을 봄. 키워드→사물 사전과 그림은 `js/decor.js` |
 | 🔌 연동 | **GitHub**(내 커밋·PR, AI 공동 작성 🤖 표시) · **Figma**(내 버전·댓글, 하루 단위) · **Notion**(내가 마지막으로 고친 페이지·DB 항목, 내 댓글). 각자 본인 토큰으로 연결하고 본인 작업만 가져옴. 토큰은 그 브라우저에만 저장. 방 공용으로 저장소·파일·페이지를 지정, 15분마다 자동으로 가져옴. 방에는 노트북·그림 이젤·서류 더미로 나타남. 연동 안 한 팀원은 리포트에 '연동 안 됨' |
+| 🟢 접속 중 표시 | 온라인 방에서 지금 접속한 팀원을 회의실 팀원 현황·전체 보기·방 제목에 "● 접속 중"으로 표시 (1분마다 갱신) |
+| 📥 Meet 녹취록 | 🎙️ 회의 화면에서 Google Drive의 녹취록 문서를 고르거나 .txt·.vtt를 올리면, 화자를 팀원과 짝지어 끝난 회의로 저장(요약 포함). 짝지은 팀원 방에 '내가 한 말'이 생김 |
+| 🎓 회의 요약 공유 | 지난 회의마다 "교수자에게 요약 공유"를 켜면 교수자 보기에 요약만 보임 (녹취 원문은 공유 안 됨) |
 
 ### 팀트레이스 SSRD 반영 범위
 - 저장 전에 이메일·전화번호·주민등록번호 형태 문자열을 가리고, AI 대화 원문은 대화당 6,000자까지만 보관 (LS-4)
@@ -93,7 +130,12 @@ js/views.js    타임라인, 결정, 리포트, 퀘스트, AI 대화 불러오�
 js/meeting.js  음성·화상 회의 (WebRTC + Firestore 신호), 받아쓰기, 회의 요약
 js/decor.js    회의 키워드 → 방 사물 (책상 위·바닥·벽에 2.5D로 그림)
 js/integrations.js  GitHub·Figma·Notion 연동 (브라우저에서 공식 API 호출, 본인 토큰)
-js/extension.js  Chrome 확장이 보낸 AI 대화 받기 → 불러오기 창
+js/extension.js  Chrome 확장이 보낸 AI 대화·검색 기록 받기 → 담기 창
+js/meetimport.js  Google Meet 녹취록 가져오기 (Drive Picker 또는 파일)
+js/ai.js       프록시 호출 (AI 정리·그림 인식·TURN), 실패하면 규칙 기반
+js/ai-config.js  프록시 주소 (비우면 꺼짐)
+js/secure.js   연동 토큰 암호화 보관
+worker/        프록시 서버 (Cloudflare Workers)
 extension/     Chrome 확장 (capture.js: AI 사이트, bridge.js: BrainRoom 페이지, background.js: 전달)
 js/cloud.js    온라인 팀 (Firestore 실시간 공유, 초대 링크, 교수자 권한)
 firestore.rules  Firestore 보안 규칙 (공유 범위·역할 강제)

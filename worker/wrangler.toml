@@ -1,0 +1,32 @@
+# BrainRoom 프록시 (Cloudflare Workers)
+# 배포: cd worker && npm install && npx wrangler login && npx wrangler deploy
+# 비밀 값은 wrangler secret put 으로 넣는다 (아래 [vars]에는 공개해도 되는 값만)
+name = "brainroom-proxy"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+FIREBASE_PROJECT_ID = "brainroom-777b0"
+ALLOWED_ORIGINS = "https://chiseongan.github.io,http://localhost:5173"
+# 비용 상한 (SSRD PR-1: 월 5만 원)
+MONTHLY_BUDGET_KRW = "50000"
+KRW_PER_USD = "1400"
+DAILY_REQUESTS_PER_USER = "60"
+# OAuth 앱의 공개 client id (비밀 값은 secret으로). 비워 두면 그 서비스의 OAuth 연결 버튼이 안 보인다
+NOTION_CLIENT_ID = ""
+FIGMA_CLIENT_ID = ""
+GITHUB_CLIENT_ID = ""
+
+# 사용량·예산 기록 (없으면 인스턴스 메모리에만 기록돼 상한이 정확하지 않다)
+# npx wrangler kv namespace create USAGE  → 나온 id를 아래에
+# [[kv_namespaces]]
+# binding = "USAGE"
+# id = "여기에 id"
+
+# 비밀 값 (npx wrangler secret put 이름):
+#   ANTHROPIC_API_KEY        LLM 요약·그림 키워드
+#   NOTION_CLIENT_SECRET     Notion OAuth
+#   FIGMA_CLIENT_SECRET      Figma OAuth
+#   GITHUB_CLIENT_SECRET     GitHub OAuth
+#   TURN_KEY_ID, TURN_KEY_API_TOKEN   Cloudflare Realtime TURN (회의 중계)

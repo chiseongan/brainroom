@@ -59,7 +59,9 @@ async function joinCall(id, { cam = false, stt = true } = {}) {
     return toast(cam ? '마이크·카메라를 쓸 수 있게 허용해 주세요' : '마이크를 쓸 수 있게 허용해 주세요');
   }
   const c = callsRef().doc(id);
-  Object.assign(call, { id, joinedAt: Date.now(), mic: true, cam, lines: [], interim: '', sigChain: Promise.resolve() });
+  // 프록시에 회의 중계 서버(TURN)가 있으면 직접 연결이 막힌 네트워크에서도 이어지게 함께 쓴다
+  const iceServers = [...ICE_SERVERS, ...(await turnIceServers())];
+  Object.assign(call, { id, joinedAt: Date.now(), mic: true, cam, lines: [], interim: '', sigChain: Promise.resolve(), iceServers });
   call.title = liveCalls().find(x => x.id === id)?.title || '회의';
   try {
     await c.collection('peers').doc(myUid()).set({
@@ -125,7 +127,8 @@ async function endCall(id, c = callsRef().doc(id)) {
     const [lines, peers] = await Promise.all([c.collection('lines').orderBy('at').get(), c.collection('peers').get()]);
     const ls = lines.docs.map(d => d.data());
     const attendees = [...new Set(peers.docs.map(d => d.data().name))];
-    await c.update({ status: 'ended', endedAt: Date.now(), summary: summarizeMeeting(ls, attendees), attendees, lineCount: ls.length });
+    const { summary, summaryBy } = await meetingSummary(ls, attendees);
+    await c.update({ status: 'ended', endedAt: Date.now(), summary, summaryBy, attendees, lineCount: ls.length });
   } catch (e) {
     writeFailed(e);
   }
@@ -157,7 +160,7 @@ function onPeers(snap) {
 }
 
 function makePeer(uid, joinedAt) {
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const pc = new RTCPeerConnection({ iceServers: call.iceServers?.length ? call.iceServers : ICE_SERVERS });
   const conn = { pc, joinedAt, stream: null, pendingIce: [] };
   call.stream.getTracks().forEach(t => pc.addTrack(t, call.stream));
   pc.onicecandidate = e => { if (e.candidate) sendSignal(uid, conn, 'candidate', e.candidate.toJSON()); };
@@ -269,7 +272,16 @@ function saveLine(text) {
   }).catch(e => console.error(e));
 }
 
-// ---------- 요약 (규칙 기반) ----------
+// ---------- 요약 (프록시가 있으면 AI, 없거나 실패하면 규칙 기반) ----------
+
+async function meetingSummary(lines, attendees) {
+  const rule = summarizeMeeting(lines, attendees);
+  if (!lines.length) return { summary: rule, summaryBy: 'rule' };
+  const ai = await aiSummarize('meeting', lines.map(l => `${l.name}: ${l.text}`).join('\n'));
+  if (!ai) return { summary: rule, summaryBy: 'rule' };
+  // 참석·발언 수 같은 사실은 규칙 기반 첫 두 줄을 그대로 쓴다
+  return { summary: formatAiSummary(ai, rule.split('\n').slice(0, 2)), summaryBy: 'ai' };
+}
 
 // 말로 한 문장이라 "~할게요", "~입니다", "~하기" 같은 말끝과 개인정보 가림 표시는 키워드에서 뺀다
 function spokenKeywords(lines, n) {
@@ -351,19 +363,26 @@ async function syncMyTalks() {
     if (done.has(id) || state.items.some(i => i.id === id)) continue;
     let lines;
     try {
-      const snap = await callsRef().doc(c.id).collection('lines').where('uid', '==', myUid()).get();
+      const col = callsRef().doc(c.id).collection('lines');
+      // 가져온 Meet 녹취는 가져온 사람이 썼으므로 화자(memberId)로 내 발언을 찾는다
+      const snap = await (c.imported ? col.where('memberId', '==', state.meId) : col.where('uid', '==', myUid())).get();
       lines = snap.docs.map(d => d.data()).sort((a, b) => a.at - b.at);
     } catch (e) {
       console.error(e);
       continue;
     }
     if (cloud.teamId !== teamId) break;
-    done.add(id);
+    // 발언이 아직 안 보이면(녹취 줄이 저장되는 중일 수 있음) 기억하지 않고 다음에 다시 본다
     if (!lines.length || state.items.some(i => i.id === id)) continue;
+    done.add(id);
     const transcript = lines.map(l => l.text).join('\n');
-    const keywords = spokenKeywords(lines, 10); // 내가 한 말에서 뽑은 키워드 (방 소품이 된다)
+    const ai = await aiSummarize('talk', transcript); // 프록시가 있으면 AI가 내 발언을 정리
+    const keywords = ai?.keywords.length ? ai.keywords : spokenKeywords(lines, 10); // 내가 한 말의 키워드 (방 물품이 된다)
+    const content = ai
+      ? formatAiSummary(ai, [`「${c.title}」 회의 (${fmtDate(c.startedAt)}) · 발언 ${lines.length}번`])
+      : summarizeMine(lines, c);
     const item = analyze({
-      id, memberId: state.meId, type: 'talk', title: `${c.title}에서 내가 한 말`, content: summarizeMine(lines, c),
+      id, memberId: state.meId, type: 'talk', title: `${c.title}에서 내가 한 말`, content,
       url: '', createdAt: c.endedAt || Date.now(), visibility: 'team', table: null, votes: [],
       talk: { callId: c.id, lineCount: lines.length, keywords, transcript: transcript.length > 6000 ? `${transcript.slice(0, 6000)}\n…(이하 생략)` : transcript },
     });
@@ -520,11 +539,14 @@ function renderMeetings() {
         <div class="modal-actions"><button class="btn primary">🎙️ 회의 시작</button></div>
       </form>`}
 
+    ${meetImportCardHTML()}
+
     <h2 class="past-title">지난 회의 <span class="muted sm">${past.length}건</span></h2>
     <div class="past-list">${past.map(c => `
       <article class="card past-call">
-        <header><b>${esc(c.title)}</b>
+        <header><b>${c.source === 'meet' ? '📥 ' : ''}${esc(c.title)}</b>
           <span class="muted sm">${fmtDate(c.startedAt)} · 약 ${Math.max(1, Math.round(((c.endedAt || c.startedAt) - c.startedAt) / 60000))}분 · 녹취 ${c.lineCount ?? 0}줄</span></header>
+        <label class="check sm"><input type="checkbox" data-mt="share:${c.id}" ${c.shareProf ? 'checked' : ''}> 🎓 교수자에게 이 회의 <b>요약</b> 공유 <span class="muted">(녹취 원문은 공유하지 않아요)</span></label>
         <details open><summary>요약</summary><pre class="call-summary">${esc(c.summary || '요약이 없어요.')}</pre></details>
         <details data-lines="${c.id}"><summary>전체 녹취록</summary><div class="call-lines">${pastLinesHTML(c.id)}</div></details>
       </article>`).join('') || '<p class="muted">아직 끝난 회의가 없어요.</p>'}</div>
@@ -558,6 +580,14 @@ document.addEventListener('click', e => {
   if (!btn) return;
   const [act, arg] = btn.dataset.mt.split(':');
   if (act === 'size') { call.big = !call.big; return renderDock(); }
+  if (act === 'share') {
+    const c = (state.calls || []).find(x => x.id === arg);
+    if (!c) return;
+    callsRef().doc(arg).update({ shareProf: !c.shareProf })
+      .then(() => toast(!c.shareProf ? '🎓 교수자에게 이 회의 요약을 공유했어요' : '교수자 공유를 껐어요'))
+      .catch(e => writeFailed(e, '회의 공유 설정'));
+    return;
+  }
   if (act === 'mic') {
     call.mic = !call.mic;
     call.stream?.getAudioTracks().forEach(t => { t.enabled = call.mic; });

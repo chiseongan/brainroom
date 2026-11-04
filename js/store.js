@@ -9,6 +9,7 @@ const TYPE_META = {
   ai: { icon: '🖥️', label: 'AI 대화', place: '모니터' },
   talk: { icon: '🎙️', label: '회의 발언', place: '마이크', auto: true }, // 회의가 끝나면 자동으로 생김 (직접 추가 X)
   work: { icon: '🛠️', label: '작업 기록', place: '작업', auto: true }, // GitHub·Figma·Notion에서 가져옴 (js/integrations.js)
+  search: { icon: '🔍', label: '검색', place: '돋보기', auto: true }, // 확장의 '탐색 기록'으로 담음 (js/extension.js)
 };
 
 let state = null;
@@ -113,6 +114,9 @@ function addItem({ memberId, type, title, content = '', url = '', createdAt = Da
 }
 
 function deleteItem(id) {
+  const gone = itemById(id);
+  // 연동 작업을 지우면 다음 가져오기 때 다시 들어오지 않게 기억한다 (js/integrations.js)
+  if (gone?.type === 'work' && typeof rememberDismissedWork === 'function') rememberDismissedWork(gone.id);
   state.items = state.items.filter(i => i.id !== id);
   state.members.forEach(m => { if (m.pinnedIdeaId === id) m.pinnedIdeaId = null; });
   // 근거가 사라진 결정은 자동으로 '확인 필요' 목록으로 간다 (ONRQ-2)

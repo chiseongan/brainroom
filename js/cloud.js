@@ -169,6 +169,7 @@ function logDenied(teamId, what) {
 
 function cloudClose() {
   if (typeof call !== 'undefined' && call.id) leaveCall(); // 방을 떠나면 회의에서도 나간다
+  stopPresence();
   cloud.unsubs.forEach(u => u());
   cloud.unsubs = [];
   cloud.teamId = null;
@@ -233,6 +234,34 @@ function cloudOpenTeam(teamId) {
     cloud.callsDenied = true;
     rebuildState();
   }));
+  startPresence(teamId);
+}
+
+// ---------- 실시간 접속 표시 (RQ-8) ----------
+// teams/{t}/presence/{uid} { memberId, at } 를 1분마다 갱신하고, 2분 반 안에 갱신한 팀원을 '접속 중'으로 본다.
+const PRESENCE_EVERY_MS = 60 * 1000;
+const PRESENCE_ONLINE_MS = 150 * 1000;
+let presenceTimer = null;
+
+function startPresence(teamId) {
+  stopPresence();
+  const ref = teamRef(teamId).collection('presence');
+  const beat = () => {
+    if (cloud.teamId !== teamId || !state?.meId) return;
+    ref.doc(authUser.uid).set({ uid: authUser.uid, memberId: state.meId, at: Date.now() }).catch(() => { /* 예전 규칙이면 조용히 건너뜀 */ });
+  };
+  setTimeout(beat, 1500); // 팀원 연결(meId)이 정해진 뒤
+  presenceTimer = setInterval(() => { beat(); rebuildState(); }, PRESENCE_EVERY_MS); // 오래된 접속도 정리
+  cloud.unsubs.push(ref.onSnapshot(snap => {
+    cloud.docs.presence = new Map(snap.docs.map(d => [d.id, d.data()]));
+    rebuildState();
+  }, () => { cloud.docs.presence = new Map(); }));
+}
+
+function stopPresence() {
+  clearInterval(presenceTimer);
+  presenceTimer = null;
+  if (cloud.teamId && authUser) teamRef().collection('presence').doc(authUser.uid).set({ uid: authUser.uid, memberId: state?.meId ?? null, at: 0 }).catch(() => {});
 }
 
 function stubFromMeta(id, m) {
@@ -273,6 +302,8 @@ function rebuildState() {
   }
   state.changeLog = [...d.logs.values()].sort((a, b) => a.at - b.at);
   state.calls = cloud.callsDenied ? null : [...d.calls.values()].sort((a, b) => b.startedAt - a.startedAt);
+  const now = Date.now();
+  state.online = new Set([...(d.presence || new Map()).values()].filter(p => p.memberId && now - p.at < PRESENCE_ONLINE_MS).map(p => p.memberId));
   if (typeof scheduleTalkSync === 'function') scheduleTalkSync(); // 끝난 회의의 내 발언 요약을 내 방에
   cloud.synced.logs = Object.fromEntries([...d.logs].map(([id, x]) => [id, stableStr(x)]));
   scheduleRender();
@@ -501,9 +532,11 @@ async function cloudLoadProfTeams() {
 async function loadProfTeam(id) {
   try {
     const t = teamRef(id);
-    const [team, meta, items, decisions, logs] = await Promise.all([
+    const [team, meta, items, decisions, logs, calls] = await Promise.all([
       t.get(), t.collection('itemMeta').get(), t.collection('items').where('visibility', '==', 'prof').get(),
       t.collection('decisions').get(), t.collection('logs').get(),
+      // 팀이 '교수자에게 공유'한 회의 요약만 (녹취 원문은 공유하지 않는다)
+      t.collection('calls').where('shareProf', '==', true).get().catch(() => ({ docs: [] })),
     ]);
     const full = new Map(items.docs.map(d => [d.id, d.data()]));
     const data = team.data();
@@ -514,6 +547,7 @@ async function loadProfTeam(id) {
       items: meta.docs.map(d => full.get(d.id) || stubFromMeta(d.id, d.data())),
       decisions: decisions.docs.map(d => d.data()),
       changeLog: logs.docs.map(d => d.data()).sort((a, b) => a.at - b.at),
+      calls: calls.docs.map(d => d.data()),
     });
   } catch (e) {
     console.error(e);

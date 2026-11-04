@@ -45,7 +45,7 @@ function memberStatusHTML() {
     return `
       <button class="status-chip" data-go="room" data-member="${m.id}" style="--mc:${m.color}">
         <span class="sc-name"><i class="dot"></i>${esc(m.name)}${m.id === state.meId ? ' (나)' : ''}</span>
-        <span class="sc-state">${activityStatus(p)}</span>
+        <span class="sc-state">${isOnline(m.id) ? '<b class="online">● 접속 중</b> · ' : ''}${activityStatus(p)}</span>
         <span class="sc-bubble">💬 ${latest ? `${TYPE_META[latest.type].icon} ${esc(trunc(latest.title, 18))}` : '아직 기록 없음'}</span>
       </button>`;
   }).join('')}</div>`;
@@ -392,11 +392,12 @@ function importSelectedAi() {
   const picked = [...document.querySelectorAll('[data-ai-idx]:checked')].map(el => aiImport[+el.dataset.aiIdx]);
   if (!picked.length) return toast('올릴 대화를 골라 주세요');
   const visibility = $('#aiVis').value;
-  picked.forEach(c => addItem({
+  const added = picked.map(c => addItem({
     memberId: state.meId, type: 'ai', title: c.title, content: aiSummary(c.firstPrompt), createdAt: c.createdAt, visibility,
     url: c.url || '', // 확장으로 담은 대화는 원래 대화 주소가 근거 링크가 된다
     ai: aiFields(c),
   }));
+  added.forEach(item => enhanceAiItem(item)); // 프록시가 있으면 AI가 요약·사용 목적·키워드를 다시 정리 (없으면 그대로)
   aiImport = null;
   closeModal();
   toast(`🖥️ AI 대화 ${picked.length}개를 모니터에 담았어요`);
@@ -485,6 +486,10 @@ function renderProfessor() {
     }).join('')}</div>
 
     <div class="card">
+      ${sel.calls?.length ? `<h3>🎙️ 공유된 회의 요약 <span class="muted sm">팀이 교수자에게 공유한 것만, 녹취 원문은 없음</span></h3>
+        ${sel.calls.sort((a, b) => b.startedAt - a.startedAt).map(c => `
+          <details class="prof-call"><summary><b>${esc(c.title)}</b> <span class="muted sm">${fmtDate(c.startedAt)} · ${esc((c.attendees || []).join(', '))}</span></summary>
+            <pre class="call-summary">${esc(c.summary || '')}</pre></details>`).join('')}` : ''}
       <h3>✅ 결정 기록</h3>
       ${(sel.decisions || []).filter(d => d.sourceIds.some(id => sel.items.some(i => i.id === id))).map(d => {
         const srcs = d.sourceIds.map(id => sel.items.find(i => i.id === id)).filter(Boolean);

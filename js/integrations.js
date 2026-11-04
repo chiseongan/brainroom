@@ -56,7 +56,7 @@ class ApiError extends Error {
 async function apiGet(source, url, token, init = {}) {
   const headers = {
     github: { Accept: 'application/vnd.github+json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    figma: { 'X-Figma-Token': token },
+    figma: String(token).startsWith('Bearer ') ? { Authorization: token } : { 'X-Figma-Token': token }, // OAuth 토큰은 'Bearer …'로 보관
     notion: { Authorization: `Bearer ${token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' },
   }[source];
   const res = await fetch(url, { ...init, headers });
@@ -83,7 +83,9 @@ const dayKey = ts => {
 // 작업 기록의 핵심 키워드: 안내 문구·커밋 머리말 같은 군더더기를 뺀 '핵심 글'에서 뽑는다
 const WORK_NOISE = new Set(['feat', 'fix', 'chore', 'refactor', 'style', 'docs', 'test', 'merge', 'pull', 'request', 'branch',
   'add', 'added', 'update', 'updated', 'remove', 'removed', 'change', 'changed', 'commit', 'main', 'master', 'wip',
-  '수정', '추가', '변경', '삭제', '업데이트', '반영', '작업', '버전', '댓글', '페이지', '자동', '저장']);
+  '수정', '추가', '변경', '삭제', '업데이트', '반영', '작업', '버전', '댓글', '페이지', '자동', '저장',
+  // Figma 컴포넌트 이름에 흔한 UI 용어
+  'button', 'primary', 'secondary', 'default', 'hover', 'pressed', 'disabled', 'container', 'wrapper', 'variant', 'property', 'size', 'large', 'small', 'medium']);
 
 function coreKeywords(text, n = 6) {
   const clean = String(text || '')
@@ -104,8 +106,21 @@ function workKeywords(item) {
 
 // 같은 id가 있으면(내 것일 때만) 내용을 고치고, 없으면 새로 담는다. 바뀐 게 있으면 true
 // core: 키워드를 뽑을 핵심 글 (커밋 메시지, 파일·버전 이름, 페이지 제목, 댓글)
-function upsertWork({ core, ...item }) {
-  item.work = { ...item.work, keywords: coreKeywords(maskPII(core ?? item.title)) };
+const WORK_DISMISSED_KEY = 'brainroom:work-dismissed';
+
+function dismissedWork() {
+  try { return new Set(JSON.parse(localStorage.getItem(WORK_DISMISSED_KEY)) || []); } catch (e) { return new Set(); }
+}
+
+// 사용자가 지운 작업 기록 id (이 브라우저에서 가져오는 사람 본인만 다시 가져오므로 여기 기억하면 된다)
+function rememberDismissedWork(id) {
+  const ids = [...dismissedWork(), id].slice(-1000);
+  try { localStorage.setItem(WORK_DISMISSED_KEY, JSON.stringify(ids)); } catch (e) { /* 무시 */ }
+}
+
+function upsertWork({ core, coreN = 6, ...item }) {
+  if (dismissedWork().has(item.id)) return false; // 지운 작업은 다시 가져오지 않는다
+  item.work = { ...item.work, keywords: coreKeywords(maskPII(core ?? item.title), coreN) };
   const ex = itemById(item.id);
   if (ex) {
     if (ex.memberId !== state.meId || ex._stub) return false;
@@ -157,7 +172,7 @@ async function syncFigma(conf, keys, since) {
       fg(`/files/${key}?depth=1`, conf.token), fg(`/files/${key}/versions`, conf.token), fg(`/files/${key}/comments`, conf.token),
     ]);
     const url = `https://www.figma.com/design/${key}`;
-    // 자동 저장이 많아서 하루 단위로 묶는다
+    // 자동 저장이 많아서 하루 단위로 묶는다 (내가 만든 버전이 있을 때만 디자인 내용을 읽는다)
     const byDay = new Map();
     (versions.versions || []).filter(v => v.user?.id === conf.userId && Date.parse(v.created_at) >= since).forEach(v => {
       const d = dayKey(Date.parse(v.created_at));
@@ -167,9 +182,11 @@ async function syncFigma(conf, keys, since) {
       if (v.label) g.labels.push(v.label);
       byDay.set(d, g);
     });
+    const designText = byDay.size ? await figmaDesignText(key, conf.token, file.version).catch(e => { console.error(e); return ''; }) : '';
     for (const [d, g] of byDay) {
       if (upsertWork({
-        id: `fg_${key}_${d}`, type: 'work', title: `${file.name} 디자인 작업`.slice(0, 80), core: `${file.name} design ${g.labels.join(' ')}`,
+        id: `fg_${key}_${d}`, type: 'work', title: `${file.name} 디자인 작업`.slice(0, 80),
+        core: `${file.name} design ${g.labels.join(' ')}\n${designText}`, coreN: 8,
         content: `Figma · 버전 ${g.count}개${g.labels.length ? ` · ${g.labels.join(', ')}` : ''}`,
         url, createdAt: g.at, work: { source: 'figma', kind: 'version', file: key, count: g.count },
       })) n++;
@@ -191,6 +208,53 @@ async function syncFigma(conf, keys, since) {
     }
   }
   return n;
+}
+
+// Figma 디자인 속 화면(프레임)·컴포넌트·페이지 이름과 글자 → 키워드용 핵심 글
+// 파일 전체를 읽으므로 무겁다 → 파일 버전이 바뀌었을 때만 다시 읽고 이 브라우저에 보관한다
+const FIGMA_TEXT_KEY = 'brainroom:figma-text';
+const FIGMA_DEFAULT_NAME = /^(frame|group|rectangle|ellipse|vector|line|polygon|star|text|image|component|instance|section|union|subtract|intersect|exclude|layer|slice|arrow|page|copy|untitled|프레임|그룹|사각형|타원|벡터|텍스트|이미지|컴포넌트|섹션|페이지)(\s*\d+)*(\s*copy)?$/i;
+const FIGMA_NAMED_TYPES = new Set(['CANVAS', 'FRAME', 'COMPONENT', 'COMPONENT_SET', 'SECTION']);
+
+function figmaTextFromDocument(doc) {
+  const names = [];
+  const texts = [];
+  const walk = n => {
+    if (!n) return;
+    if (n.type === 'TEXT' && n.characters) texts.push(n.characters);
+    else if (FIGMA_NAMED_TYPES.has(n.type) && n.name && !FIGMA_DEFAULT_NAME.test(n.name.trim())) names.push(n.name);
+    (n.children || []).forEach(walk);
+  };
+  walk(doc);
+  // 화면 이름은 핵심이라 두 번 넣어 가중치를 준다
+  return [...names, ...names, ...texts].join('\n').slice(0, 8000);
+}
+
+// 첫 페이지의 맨 위 화면(프레임) id 몇 개
+function figmaTopFrames(doc, n) {
+  const page = (doc?.children || [])[0];
+  return (page?.children || []).filter(c => c.type === 'FRAME').slice(0, n).map(c => c.id);
+}
+
+async function figmaDesignText(key, token, version) {
+  let cache = {};
+  try { cache = JSON.parse(localStorage.getItem(FIGMA_TEXT_KEY)) || {}; } catch (e) { /* 무시 */ }
+  if (version && cache[key]?.version === version) return cache[key].text;
+  const file = await fg(`/files/${key}`, token);
+  let text = figmaTextFromDocument(file.document);
+  // 프록시가 있으면 첫 화면 몇 장을 그림으로 뽑아 AI가 주제 키워드를 본다 (글자 없는 화면 보완)
+  const frames = figmaTopFrames(file.document, 3);
+  if (frames.length && await aiFeature('vision')) {
+    try {
+      const imgs = await fg(`/images/${key}?ids=${encodeURIComponent(frames.join(','))}&format=png&scale=0.5`, token);
+      const seen = await aiVision(Object.values(imgs.images || {}).filter(Boolean));
+      if (seen?.length) text = `${seen.join('\n')}\n${seen.join('\n')}\n${text}`; // 그림에서 본 주제도 화면 이름만큼 무게를 준다
+    } catch (e) { console.warn('Figma 화면 그림을 읽지 못했어요', e); }
+  }
+  cache[key] = { version: file.version || version, text, at: Date.now() };
+  const keep = Object.entries(cache).sort((a, b) => b[1].at - a[1].at).slice(0, 20);
+  try { localStorage.setItem(FIGMA_TEXT_KEY, JSON.stringify(Object.fromEntries(keep))); } catch (e) { /* 무시 */ }
+  return text;
 }
 
 function notionTitle(page) {
@@ -273,9 +337,10 @@ async function syncAllWork(manual) {
   const links = state.links || {};
   const since = Date.now() - SYNC_DAYS * 864e5;
   const jobs = [];
-  if (links.github && conf.github?.login) jobs.push(['github', () => syncGithub(conf.github, links.github, since)]);
-  if (links.figma?.length && conf.figma?.token) jobs.push(['figma', () => syncFigma(conf.figma, links.figma, since)]);
-  if (links.notion?.length && conf.notion?.token) jobs.push(['notion', () => syncNotion(conf.notion, links.notion, since)]);
+  const opened = async key => ({ ...conf[key], token: await openToken(conf[key]?.token) }); // 암호화된 토큰은 쓸 때만 푼다
+  if (links.github && conf.github?.login) jobs.push(['github', async () => syncGithub(await opened('github'), links.github, since)]);
+  if (links.figma?.length && conf.figma?.token) jobs.push(['figma', async () => syncFigma(await opened('figma'), links.figma, since)]);
+  if (links.notion?.length && conf.notion?.token) jobs.push(['notion', async () => syncNotion(await opened('notion'), links.notion, since)]);
   if (!jobs.length) { if (manual) toast('연결된 도구가 없어요. 방 설정과 내 연결을 확인해 주세요'); return; }
   workRunning = true;
   const results = [];
@@ -331,7 +396,7 @@ function renderIntegrations() {
     <div class="page-head">
       <div>
         <h1>🔌 연동</h1>
-        <p class="muted">각자 <b>본인 토큰</b>으로 연결하고, <b>본인 작업만</b> 가져와요. 토큰은 이 브라우저에만 저장되고 팀·서버로 올라가지 않아요. 최근 ${SYNC_DAYS}일 작업을 15분마다 가져와요.</p>
+        <p class="muted">각자 <b>본인 토큰</b>으로 연결하고, <b>본인 작업만</b> 가져와요. 토큰은 이 브라우저에만 <b>암호화해서</b> 저장되고 팀·서버로 올라가지 않아요. 최근 ${SYNC_DAYS}일 작업을 15분마다 가져와요.</p>
       </div>
       <div class="filters">
         <span class="muted sm">${last ? `마지막으로 가져온 시각 ${fmtDate(last)}` : '아직 가져온 적 없어요'}</span>
@@ -340,6 +405,7 @@ function renderIntegrations() {
     </div>
 
     <div class="integ-grid">
+      ${aiProxyCardHTML()}
       <article class="card integ">
         <header><h2>🐙 GitHub</h2>${connectionBadge(my.github)}</header>
         <p class="muted sm">내 커밋과 풀 리퀘스트를 가져와요. 커밋에 AI 공동 작성 표시(Co-Authored-By: Claude 등)가 있으면 🤖로 알려줘요.</p>
@@ -408,7 +474,8 @@ document.addEventListener('submit', async e => {
   const data = new FormData(form);
   const v = (data.get('v') || '').trim();
   const conf = loadInteg();
-  const keepToken = (old, typed) => (typed && !/^•+$/.test(typed) ? typed.trim() : old);
+  // 새로 입력한 토큰이면 그것을, 아니면 저장돼 있던(암호화된) 토큰을 풀어서 쓴다
+  const typedToken = async (old, typed) => (typed && !/^•+$/.test(typed) ? typed.trim() : openToken(old));
   state.links ||= {};
   try {
     if (kind === 'github-repo') {
@@ -425,30 +492,30 @@ document.addEventListener('submit', async e => {
       saveState();
       toast('방에 추가했어요');
     } else if (kind === 'github-me') {
-      const token = keepToken(conf.github?.token, data.get('token'));
+      const token = await typedToken(conf.github?.token, data.get('token'));
       let login = (data.get('login') || '').trim();
       if (token) login = (await gh('/user', token)).login;
       if (!login) return toast('GitHub 아이디를 넣어 주세요');
-      conf.github = { token: token || '', login };
+      conf.github = { token: await sealToken(token), login };
       saveInteg(conf);
       setMyConnection('github', 'ok');
       saveState();
       toast(`🐙 ${login} 로 연결했어요`);
     } else if (kind === 'figma-me') {
-      const token = keepToken(conf.figma?.token, data.get('token'));
+      const token = await typedToken(conf.figma?.token, data.get('token'));
       if (!token) return toast('Figma 토큰을 넣어 주세요');
       const meF = await fg('/me', token);
-      conf.figma = { token, userId: meF.id, handle: meF.handle };
+      conf.figma = { token: await sealToken(token), userId: meF.id, handle: meF.handle };
       saveInteg(conf);
       setMyConnection('figma', 'ok');
       saveState();
       toast(`🎨 ${meF.handle} 로 연결했어요`);
     } else if (kind === 'notion-me') {
-      const token = keepToken(conf.notion?.token, data.get('token'));
+      const token = await typedToken(conf.notion?.token, data.get('token'));
       if (!token) return toast('Notion 시크릿을 넣어 주세요');
       const users = (await nt('/users?page_size=100', token)).results.filter(u => u.type === 'person').map(u => ({ id: u.id, name: u.name || u.person?.email || u.id }));
       const userId = data.get('user') || conf.notion?.userId || (users.length === 1 ? users[0].id : '');
-      conf.notion = { token, users, userId, userName: users.find(u => u.id === userId)?.name || '' };
+      conf.notion = { token: await sealToken(token), users, userId, userName: users.find(u => u.id === userId)?.name || '' };
       saveInteg(conf);
       if (userId) { setMyConnection('notion', 'ok'); saveState(); }
       toast(userId ? `📝 ${conf.notion.userName} 로 연결했어요` : '📝 연결했어요. 아래에서 Notion의 나를 골라 주세요');
@@ -479,4 +546,104 @@ document.addEventListener('click', e => {
     toast(`${SOURCES[a].name} 연결을 해제했어요 (이미 가져온 기록은 남아요)`);
   }
   render();
+});
+
+// ---------- OAuth로 연결 (프록시가 client secret을 쥐고 토큰을 바꿔 준다) ----------
+// 토큰 붙여넣기 대신 "Notion·Figma·GitHub 계정으로 연결"을 누르면 그 서비스 승인 화면을 거쳐 돌아온다.
+// 돌아올 주소(redirect URI)는 지금 BrainRoom 주소 그대로이며, 각 서비스의 OAuth 앱에 등록돼 있어야 한다.
+const OAUTH_PENDING_KEY = 'brainroom:oauth-pending';
+const OAUTH_CODE_KEY = 'brainroom:oauth-code';
+const OAUTH_AUTHORIZE = {
+  notion: (id, redirect, st) => `https://api.notion.com/v1/oauth/authorize?client_id=${encodeURIComponent(id)}&response_type=code&owner=user&redirect_uri=${encodeURIComponent(redirect)}&state=${st}`,
+  figma: (id, redirect, st) => `https://www.figma.com/oauth?client_id=${encodeURIComponent(id)}&redirect_uri=${encodeURIComponent(redirect)}&scope=${encodeURIComponent('current_user:read,file_content:read,file_versions:read,file_comments:read')}&state=${st}&response_type=code`,
+  github: (id, redirect, st) => `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(id)}&redirect_uri=${encodeURIComponent(redirect)}&scope=${encodeURIComponent('repo read:user')}&state=${st}`,
+};
+const oauthRedirect = () => `${location.origin}${location.pathname}`;
+
+async function startOAuth(provider) {
+  const cfg = await proxyConfig();
+  const clientId = cfg?.features?.oauth?.[provider];
+  if (!clientId || !OAUTH_AUTHORIZE[provider]) return toast('이 서비스는 아직 OAuth 연결이 설정되지 않았어요');
+  const st = crypto.getRandomValues(new Uint32Array(4)).join('');
+  try { sessionStorage.setItem(OAUTH_PENDING_KEY, JSON.stringify({ provider, state: st, at: Date.now() })); } catch (e) { /* 무시 */ }
+  location.href = OAUTH_AUTHORIZE[provider](clientId, oauthRedirect(), st);
+}
+
+// 승인 화면에서 돌아오면 주소의 code를 바로 지우고(새로고침해도 다시 쓰이지 않게) 로그인 뒤 교환한다
+(function captureOAuthReturn() {
+  if (typeof location === 'undefined' || typeof sessionStorage === 'undefined') return;
+  const params = new URLSearchParams(location.search);
+  const code = params.get('code'), st = params.get('state');
+  if (!code || !st || params.get('team')) return; // ?team=…&code=… 는 방 초대 링크
+  let pending = null;
+  try { pending = JSON.parse(sessionStorage.getItem(OAUTH_PENDING_KEY)); } catch (e) { /* 무시 */ }
+  if (!pending || pending.state !== st) return; // 내가 시작한 연결이 아니면 무시 (CSRF 방지)
+  try {
+    sessionStorage.removeItem(OAUTH_PENDING_KEY);
+    sessionStorage.setItem(OAUTH_CODE_KEY, JSON.stringify({ provider: pending.provider, code }));
+  } catch (e) { /* 무시 */ }
+  history.replaceState(null, '', location.pathname);
+})();
+
+let oauthFinishing = false;
+async function finishOAuthIfPending() {
+  if (oauthFinishing || !proxyReady() || !state?.meId) return;
+  let job = null;
+  try { job = JSON.parse(sessionStorage.getItem(OAUTH_CODE_KEY)); } catch (e) { /* 무시 */ }
+  if (!job) return;
+  oauthFinishing = true;
+  try { sessionStorage.removeItem(OAUTH_CODE_KEY); } catch (e) { /* 무시 */ }
+  try {
+    const res = await proxyCall(`/v1/oauth/${job.provider}`, { code: job.code, redirectUri: oauthRedirect() });
+    const conf = loadInteg();
+    if (job.provider === 'notion') {
+      conf.notion = { token: await sealToken(res.access_token), oauth: true, userId: res.user?.id || '', userName: res.user?.name || '', users: res.user?.id ? [{ id: res.user.id, name: res.user.name }] : [] };
+    } else if (job.provider === 'figma') {
+      const bearer = `Bearer ${res.access_token}`;
+      const meF = await fg('/me', bearer);
+      conf.figma = { token: await sealToken(bearer), oauth: true, userId: meF.id, handle: meF.handle };
+    } else if (job.provider === 'github') {
+      const login = (await gh('/user', res.access_token)).login;
+      conf.github = { token: await sealToken(res.access_token), oauth: true, login };
+    }
+    saveInteg(conf);
+    setMyConnection(job.provider, 'ok');
+    state.view = 'integrations';
+    saveState();
+    toast(`${SOURCES[job.provider].icon} ${SOURCES[job.provider].name} 계정으로 연결했어요`);
+  } catch (e) {
+    console.error(e);
+    toast(`${SOURCES[job.provider]?.name || ''} 연결을 마치지 못했어요 (${e.message})`);
+  }
+  oauthFinishing = false;
+  render();
+}
+
+// 연동 화면 위쪽: AI 요약·OAuth 상태 (프록시가 있을 때만)
+let aiCardCfg = null;
+function aiProxyCardHTML() {
+  if (!PROXY_URL) return '';
+  if (!aiCardCfg) { proxyConfig().then(c => { aiCardCfg = c || {}; if (state?.view === 'integrations') render(); }); return ''; }
+  const f = aiCardCfg.features || {};
+  const oauthBtns = Object.entries(SOURCES).filter(([k]) => f.oauth?.[k])
+    .map(([k, s]) => `<button class="btn sm" data-ig="oauth:${k}">${s.icon} ${s.name} 계정으로 연결</button>`).join('');
+  return `
+    <article class="card integ ai-card">
+      <header><h2>🤖 AI 정리</h2>${f.summarize ? '<span class="vis-badge vis-prof">켜짐</span>' : '<span class="vis-badge vis-me">프록시에 키 없음</span>'}</header>
+      <p class="muted sm">회의·AI 대화·내 발언을 소형 AI 모델(${esc(aiCardCfg.model || '')})로 요약하고 키워드를 뽑아요. 한도(하루 ${aiCardCfg.limits?.dailyRequestsPerUser ?? '-'}회, 월 ${(aiCardCfg.limits?.monthlyBudgetKRW ?? 0).toLocaleString()}원)를 넘거나 꺼 두면 규칙 기반으로 정리해요.${f.vision ? ' Figma 화면 그림도 읽어요.' : ''}${f.turn ? ' 회의 중계 서버도 켜져 있어요.' : ''}</p>
+      <label class="check sm"><input type="checkbox" data-ig="aiswitch" ${aiSwitchOn() ? 'checked' : ''} ${f.summarize ? '' : 'disabled'}> AI 정리 쓰기 (이 브라우저)</label>
+      ${oauthBtns ? `<h3>계정으로 연결 (토큰 붙여넣기 대신)</h3><div class="modal-actions" style="justify-content:flex-start">${oauthBtns}</div>` : ''}
+      ${proxyReady() ? '' : '<p class="notice sm">AI 정리와 계정 연결은 Google 로그인 후 온라인 방에서 쓸 수 있어요.</p>'}
+    </article>`;
+}
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('[data-ig^="oauth:"]');
+  if (btn) startOAuth(btn.dataset.ig.slice(6));
+});
+document.addEventListener('change', e => {
+  if (e.target.matches?.('[data-ig="aiswitch"]')) {
+    setAiSwitch(e.target.checked);
+    toast(e.target.checked ? '🤖 AI 정리를 켰어요' : 'AI 정리를 껐어요. 규칙 기반으로 정리해요');
+  }
 });

@@ -1,0 +1,17 @@
+{
+  "name": "brainroom-proxy",
+  "private": true,
+  "type": "module",
+  "description": "BrainRoom 프록시: LLM 요약·분류, Figma 그림 키워드, OAuth 토큰 교환, 회의 중계 서버(TURN) 자격 발급",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
