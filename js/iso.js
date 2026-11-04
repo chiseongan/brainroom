@@ -3,7 +3,21 @@
 // 뒷벽은 y=0 평면, 왼쪽 벽은 x=0 평면에 붙어 있다.
 
 const TW = 64, TH = 32;
-const OUTLINE = 'stroke="#1b1b2a" stroke-opacity=".35" stroke-width="1" stroke-linejoin="round"';
+const OUTLINE = 'stroke="#1b1b2a" stroke-opacity=".24" stroke-width="1" stroke-linejoin="round"';
+
+// 그림자·둥근 면·빛에 쓰는 그라데이션. 화면에 하나만 둔다 (id를 여러 SVG가 함께 쓴다)
+(function injectIsoDefs() {
+  if (typeof document === 'undefined' || !document.body?.insertAdjacentHTML) return;
+  document.body.insertAdjacentHTML('beforeend', `<svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden"><defs>
+    <radialGradient id="brShadow"><stop offset="0" stop-color="#000" stop-opacity=".55"/><stop offset=".65" stop-color="#000" stop-opacity=".3"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient>
+    <radialGradient id="brRound" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#fff" stop-opacity=".42"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".3"/></radialGradient>
+    <linearGradient id="brCyl"><stop offset="0" stop-color="#000" stop-opacity=".2"/><stop offset=".3" stop-color="#fff" stop-opacity=".24"/><stop offset=".6" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".32"/></linearGradient>
+    <linearGradient id="brWall" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".75" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#3b2a1a" stop-opacity=".14"/></linearGradient>
+    <linearGradient id="brSky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8fc8ef"/><stop offset=".72" stop-color="#d4ecf8"/><stop offset="1" stop-color="#eef6ea"/></linearGradient>
+    <linearGradient id="brSun" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff3c9" stop-opacity=".5"/><stop offset="1" stop-color="#fff3c9" stop-opacity="0"/></linearGradient>
+    <radialGradient id="brGlow"><stop offset="0" stop-color="#ffe9a8" stop-opacity=".55"/><stop offset="1" stop-color="#ffe9a8" stop-opacity="0"/></radialGradient>
+  </defs></svg>`);
+})();
 const PIXEL_FONT = "Galmuri11, 'Malgun Gothic', sans-serif";
 
 function iso(x, y, z = 0) {
@@ -77,7 +91,61 @@ function wallTextX(y, z, text, size, fill, weight = 400) {
   return `<text transform="matrix(1,-0.5,0,1,${sx.toFixed(1)},${sy.toFixed(1)})" font-size="${size}" fill="${fill}" font-weight="${weight}" font-family="${PIXEL_FONT}">${esc(text)}</text>`;
 }
 
+// ---------- 부드러운 도형 ----------
+
+// 바닥(또는 책상)에 닿는 그림자: 물건이 떠 보이지 않게 한다
+function shadow(x, y, w, d, opacity = 0.26, z = 0) {
+  const [cx, cy] = iso(x, y, z);
+  const rx = (w + d) * 17;
+  return `<ellipse cx="${cx}" cy="${cy + 1}" rx="${rx}" ry="${rx / 2}" fill="url(#brShadow)" opacity="${opacity * 2}"/>`;
+}
+
+// 원기둥 (r2로 위가 좁거나 넓은 통). r, h는 px
+function cyl(x, y, z, r, h, color, { r2 = r, top } = {}) {
+  const [cx, cy] = iso(x, y, z);
+  const t = cy - h;
+  const side = `M${cx - r},${cy} A${r},${r / 2} 0 0 0 ${cx + r},${cy} L${cx + r2},${t} A${r2},${r2 / 2} 0 0 1 ${cx - r2},${t} Z`;
+  return `<path d="${side}" fill="${color}" ${OUTLINE}/><path d="${side}" fill="url(#brCyl)"/>
+    <ellipse cx="${cx}" cy="${t}" rx="${r2}" ry="${r2 / 2}" fill="${top ?? shade(color, 0.14)}" ${OUTLINE}/>`;
+}
+
+// 앞면(y = 일정, 'y') 또는 옆면(x = 일정, 'x')에 붙은 원 (스피커, 바퀴, 금고 손잡이 등)
+function faceCircle(x, y, z, r, face, fill, extra = '') {
+  const [cx, cy] = iso(x, y, z);
+  const m = face === 'y' ? `matrix(.86,.43,0,1,${cx},${cy})` : `matrix(.86,-.43,0,1,${cx},${cy})`;
+  return `<circle cx="0" cy="0" r="${r}" transform="${m}" fill="${fill}" ${extra}/>`;
+}
+
 // ---------- 방 뼈대 ----------
+
+// 나무 마루: 길이가 다른 판자를 엇갈려 깐다. seed가 같으면 언제나 같은 무늬
+function woodFloor(W, D, base, seed = 7) {
+  let out = box(0, 0, -10, W, D, 10, base, { top: base, left: shade(base, -0.42), right: shade(base, -0.55) });
+  const PLANK = 0.5;
+  let r = seed;
+  const rand = () => { r = (r * 16807) % 2147483647; return r / 2147483647; };
+  for (let j = 0; j < D - 1e-6; j += PLANK) {
+    let i = -rand() * 1.6;
+    while (i < W) {
+      const len = 1.6 + rand() * 1.5;
+      const x0 = Math.max(0, i), x1 = Math.min(W, i + len);
+      const tone = (rand() - 0.5) * 0.14;
+      out += poly([[x0, j, 0], [x1, j, 0], [x1, j + PLANK, 0], [x0, j + PLANK, 0]], tone < 0 ? shade(base, tone) : shade(base, tone * 0.8), 'stroke="#3b2412" stroke-opacity=".2" stroke-width=".7"');
+      // 나뭇결
+      if (rand() > 0.55) {
+        const gy = j + 0.14 + rand() * 0.22;
+        const gx = x0 + (x1 - x0) * (0.15 + rand() * 0.3);
+        out += `<line x1="${iso(gx, gy)[0]}" y1="${iso(gx, gy)[1]}" x2="${iso(Math.min(x1, gx + 0.6), gy)[0]}" y2="${iso(Math.min(x1, gx + 0.6), gy)[1]}" stroke="#3b2412" stroke-opacity=".1" stroke-width=".8"/>`;
+      }
+      i += len;
+    }
+  }
+  // 벽 쪽으로 어두워지는 그늘
+  out += poly([[0, 0, 0], [W, 0, 0], [W, 0.7, 0], [0, 0.7, 0]], '#1c1208', 'opacity=".12"');
+  out += poly([[0, 0, 0], [0.7, 0, 0], [0.7, D, 0], [0, D, 0]], '#1c1208', 'opacity=".12"');
+  return out;
+}
+
 
 function floorTiles(W, D, c1, c2) {
   let out = box(0, 0, -10, W, D, 10, c1, { top: c1, left: shade(c1, -0.35), right: shade(c1, -0.5) });
@@ -92,16 +160,22 @@ function floorTiles(W, D, c1, c2) {
 
 function walls(W, D, H, color) {
   const T = 0.22;
-  const cap = shade(color, -0.35);
+  const cap = shade(color, -0.3);
+  const BASE = 9; // 걸레받이 높이
   return [
     poly([[0, 0, 0], [W, 0, 0], [W, 0, H], [0, 0, H]], color, OUTLINE),
-    poly([[0, 0, 0], [0, D, 0], [0, D, H], [0, 0, H]], shade(color, -0.12), OUTLINE),
-    wallRectY(0, W, 0, 7, shade(color, -0.25)),
-    wallRectX(0, D, 0, 7, shade(color, -0.3)),
+    poly([[0, 0, 0], [0, D, 0], [0, D, H], [0, 0, H]], shade(color, -0.1), OUTLINE),
+    // 위는 밝고 아래로 갈수록 살짝 어두운 벽면
+    poly([[0, 0, 0], [W, 0, 0], [W, 0, H], [0, 0, H]], 'url(#brWall)'),
+    poly([[0, 0, 0], [0, D, 0], [0, D, H], [0, 0, H]], 'url(#brWall)'),
+    // 걸레받이
+    wallRectY(0, W, 0, BASE, '#f4f1ea', 'stroke="#1b1b2a" stroke-opacity=".14"'),
+    wallRectX(0, D, 0, BASE, '#e5e1d8', 'stroke="#1b1b2a" stroke-opacity=".14"'),
+    // 벽 윗면과 잘린 단면
     poly([[-T, -T, H], [W, -T, H], [W, 0, H], [0, 0, H]], cap, OUTLINE),
     poly([[-T, -T, H], [0, 0, H], [0, D, H], [-T, D, H]], cap, OUTLINE),
-    poly([[W, -T, 0], [W, 0, 0], [W, 0, H], [W, -T, H]], shade(color, -0.45), OUTLINE),
-    poly([[-T, D, 0], [0, D, 0], [0, D, H], [-T, D, H]], shade(color, -0.45), OUTLINE),
+    poly([[W, -T, 0], [W, 0, 0], [W, 0, H], [W, -T, H]], shade(color, -0.42), OUTLINE),
+    poly([[-T, D, 0], [0, D, 0], [0, D, H], [-T, D, H]], shade(color, -0.42), OUTLINE),
   ].join('');
 }
 
@@ -122,28 +196,38 @@ function depthSorted(objects) {
 
 // ---------- 가구 ----------
 
+// 큰 화분: 테라코타 화분 + 줄기 + 넓은 잎 여러 장
 function palm(x, y, s = 1) {
-  const potH = 16 * s;
+  const potH = 18 * s;
   const [cx, cy] = iso(x, y, potH);
-  const top = cy - 46 * s;
-  const leaf = (rot, len, col) =>
-    `<ellipse cx="${cx}" cy="${top}" rx="${len * s}" ry="${6 * s}" fill="${col}" ${OUTLINE}
-      transform="rotate(${rot} ${cx} ${top}) translate(${len * s * 0.8} 0)"/>`;
+  const top = cy - 38 * s;
+  const leaf = (rot, len, col) => {
+    const L = len * s, W = 7.5 * s;
+    return `<path d="M0,0 C${L * 0.3},${-W} ${L * 0.75},${-W * 0.85} ${L},0 C${L * 0.72},${W * 0.5} ${L * 0.3},${W * 0.55} 0,0 Z" fill="${col}" stroke="#14401f" stroke-opacity=".35" stroke-width=".7" transform="translate(${cx},${top}) rotate(${rot})"/>
+      <line x1="0" y1="0" x2="${L * 0.88}" y2="0" stroke="#ffffff" stroke-opacity=".22" stroke-width=".7" transform="translate(${cx},${top}) rotate(${rot})"/>`;
+  };
   return `<g class="palm">
-    ${box(x - 0.28, y - 0.28, 0, 0.56, 0.56, potH, '#9aa3ad')}
-    <rect x="${cx - 3 * s}" y="${top}" width="${6 * s}" height="${46 * s}" fill="#8a5a2b" ${OUTLINE}/>
-    ${leaf(-160, 26, '#2f9e44')}${leaf(-20, 26, '#2f9e44')}${leaf(-120, 24, '#40c057')}
-    ${leaf(-60, 24, '#40c057')}${leaf(-90, 20, '#69db7c')}${leaf(150, 20, '#37b24d')}${leaf(30, 20, '#37b24d')}
+    ${shadow(x, y, 0.75 * s, 0.75 * s)}
+    ${cyl(x, y, 0, 12 * s, potH, '#b5683f', { r2: 15 * s, top: '#6a3f26' })}
+    <ellipse cx="${cx}" cy="${cy}" rx="${15 * s}" ry="${7.5 * s}" fill="none" stroke="#cc7f55" stroke-width="${2 * s}"/>
+    <ellipse cx="${cx}" cy="${cy}" rx="${11.5 * s}" ry="${5.7 * s}" fill="#3a2a1e"/>
+    <path d="M${cx - 1.5 * s},${cy} L${cx - 1 * s},${top} L${cx + 1 * s},${top} L${cx + 1.5 * s},${cy} Z" fill="#6c5533"/>
+    ${leaf(155, 30, '#2f7d43')}${leaf(25, 30, '#2f7d43')}${leaf(-168, 27, '#347f47')}${leaf(-12, 27, '#347f47')}
+    ${leaf(-140, 31, '#3e9654')}${leaf(-40, 31, '#3e9654')}${leaf(-112, 30, '#4aa962')}${leaf(-68, 30, '#4aa962')}${leaf(-90, 26, '#5dbb72')}
   </g>`;
 }
 
+// 스탠드 조명: 받침 + 기둥 + 천 갓. 켜져 있으면 주변이 은은히 밝다
 function floorLamp(x, y, lit) {
   const [cx, cy] = iso(x, y, 0);
+  const shadeZ = 68;
   return `<g>
-    <ellipse cx="${cx}" cy="${cy}" rx="10" ry="5" fill="#9ca3af" ${OUTLINE}/>
-    <rect x="${cx - 1.5}" y="${cy - 70}" width="3" height="70" fill="#9ca3af"/>
-    <circle cx="${cx - 9}" cy="${cy - 72}" r="7" fill="${lit ? '#fde68a' : '#e5e7eb'}" ${OUTLINE} ${lit ? 'class="glow"' : ''}/>
-    <circle cx="${cx + 9}" cy="${cy - 72}" r="7" fill="${lit ? '#fde68a' : '#e5e7eb'}" ${OUTLINE} ${lit ? 'class="glow"' : ''}/>
+    ${shadow(x, y, 0.4, 0.4)}
+    ${lit ? `<ellipse cx="${cx}" cy="${cy - shadeZ + 8}" rx="42" ry="36" fill="url(#brGlow)"/>
+      <ellipse cx="${cx}" cy="${cy + 2}" rx="34" ry="17" fill="url(#brGlow)" opacity=".7"/>` : ''}
+    ${cyl(x, y, 0, 9, 2, '#3a3f4a', { top: '#555b68' })}
+    <rect x="${cx - 1.2}" y="${cy - shadeZ}" width="2.4" height="${shadeZ - 1}" fill="#6a707c"/>
+    ${cyl(x, y, shadeZ - 2, 13, 18, lit ? '#f7e4ae' : '#e8e2d2', { r2: 8, top: lit ? '#fff2c6' : '#f2ecdd' })}
   </g>`;
 }
 

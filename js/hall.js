@@ -47,15 +47,15 @@ function tableSVG() {
     ${box(T.x + T.w - 0.35, T.y + T.d - 0.35, 0, 0.2, 0.2, T.h, '#6d4a2b')}
     ${box(T.x + 0.15, T.y + T.d - 0.35, 0, 0.2, 0.2, T.h, '#6d4a2b')}
     ${box(T.x + T.w - 0.35, T.y + 0.15, 0, 0.2, 0.2, T.h, '#6d4a2b')}
-    ${box(T.x, T.y, T.h - 8, T.w, T.d, 8, '#b98352')}
+    ${shadow(T.x + T.w / 2, T.y + T.d / 2, 3.2, 2, 0.16)}
+    ${box(T.x, T.y, T.h - 8, T.w, T.d, 8, '#a97849', { top: '#bb8a58' })}
     ${papers}
     ${tableItems().length ? '' : `<text x="${cx}" y="${cy - 4}" font-size="11" fill="#fff" text-anchor="middle" font-family="${PIXEL_FONT}">자료를 올려주세요</text>`}
   </g>`;
 }
 
 function hallHTML() {
-  const floorA = '#eef4f7', floorB = '#dde9ef';
-  const wall = '#a8ecd4';
+  const wall = '#f0ebe0';
   const slots = doorSlots(state.members.length);
 
   const objects = [
@@ -79,11 +79,12 @@ function hallHTML() {
   });
 
   const scene = [
-    floorTiles(HALL_W, HALL_D, floorA, floorB),
+    woodFloor(HALL_W, HALL_D, '#c29a6c', 41),
     walls(HALL_W, HALL_D, HALL_H, wall),
-    wallTextY(0.3, HALL_H - 22, `${state.teamName} 회의실`, 13, '#2f6f5a', 700),
+    wallTextY(0.3, HALL_H - 22, `${state.teamName} 회의실`, 13, '#5c4a38', 700),
     state.members.map((m, i) => doorSVG(m, slots[i])).join(''),
-    flat(3.2, 3.0, 5.6, 4.4, '#9ad0c2', 'opacity=".45"'),
+    flat(3.2, 3.0, 5.6, 4.4, '#8a7a68', 'stroke="#1b1b2a" stroke-opacity=".2"'),
+    flat(3.3, 3.1, 5.4, 4.2, '#a79680'),
     depthSorted(objects),
   ].join('');
 

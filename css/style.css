@@ -154,7 +154,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 24px; }
   border-radius: var(--radius);
   overflow: hidden;
   user-select: none;
-  background: radial-gradient(ellipse at 50% 40%, #2a2f45, #141724);
+  background: radial-gradient(ellipse at 50% 42%, #ece6da, #cfc7b8);
   box-shadow: var(--shadow);
 }
 .room.mini, .room.mini * { pointer-events: none; }
@@ -182,7 +182,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 24px; }
 .hall {
   border-radius: 20px;
   overflow: hidden;
-  background: radial-gradient(ellipse at 50% 45%, #2a2f45, #10121c);
+  background: radial-gradient(ellipse at 50% 42%, #ece6da, #cfc7b8);
   box-shadow: var(--shadow);
   margin-bottom: 28px;
 }

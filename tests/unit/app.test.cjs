@@ -19,9 +19,11 @@ function makeApp(fakeFetch, names = ['안치성', '김단유', '박채연']) {
   vm.runInContext(['themes', 'nlp', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
     + `\n;var guestMode = false, authUser = null, cloud = { loaded: true };
     function render() {} function toast() {} function esc(s) { return String(s); } function fmtDate() { return ''; } function trunc(s) { return s; }
+    function hashCode(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return Math.abs(h); }
     state = newWorkspace('t', ${JSON.stringify(names)}); state.meId = state.members[0].id;
     globalThis.T = { get state() { return state; }, parseTranscript, guessMember, figmaTextFromDocument, coreKeywords, upsertWork, deleteItem, roomDecorGroups,
-      syncGithub, syncFigma, syncNotion, decorFor, workKeywords, itemDecorIds, detectThemes, extractKeywords, addItem, decisionCandidates, DECISION_PATTERN, maskPII, weeklySummary, weekStart, sanitizeForProf };`, ctx);
+      syncGithub, syncFigma, syncNotion, decorFor, workKeywords, itemDecorIds, detectThemes, extractKeywords, addItem, decisionCandidates, DECISION_PATTERN, maskPII, weeklySummary, weekStart, sanitizeForProf, decorMatch, DECOR, DECOR_BY_ID, DESK_Z };`, ctx);
+  vm.runInContext(fs.readFileSync(path.join(root, 'js', 'room.js'), 'utf8').replace(/function hashCode[\s\S]*?\n}\n/, '') + `\n;globalThis.T.R = { decorPlacement, roomHTML, FLOOR_SLOTS, DESK_SLOTS };`, ctx);
   return ctx.T;
 }
 const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / ');
@@ -65,6 +67,45 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
   ok(T.decorFor('ui')?.id === 'art' && T.decorFor('fix')?.id === 'toolbox' && T.decorFor('login')?.id === 'safe', 'ui→이젤, fix→공구함, login→금고');
   ok(T.decorFor('다회용기')?.id === 'recycle' && T.decorFor('서비스')?.id !== 'calendar', '한국어 부분 일치');
   ok(T.coreKeywords('fix(auth): 로그인 오류 수정\n\nCo-Authored-By: Claude').includes('로그인') && !T.coreKeywords('feat: 추가 수정').includes('수정'), '커밋 머리말·꼬리말 제거');
+
+  // 가장 구체적인 단어로 고른다
+  const id = w => T.decorFor(w)?.id;
+  ok(id('3주차') === 'calendar' && id('주차장') === 'bike', `'3주차'는 일정, '주차장'은 이동 (${id('3주차')}, ${id('주차장')})`);
+  ok(id('데이터베이스') === 'laptop' && id('데이터') === 'chart', '데이터베이스는 노트북, 데이터는 차트');
+  ok(id('재활용품') === 'recycle' && id('음식물') === 'recycle' && id('음식') === 'bento', '음식물 쓰레기는 분리수거함, 음식은 도시락');
+  ok(id('개인정보') === 'safe' && !T.decorFor('정보'), "'정보'만으로 금고가 되지 않음");
+  ok(id('자연어') === 'robot' && id('자연') === 'plant', '자연어는 로봇, 자연은 화분');
+  ok(id('시각화') === 'chart' && id('시각') === 'clock', '시각화는 차트, 시각은 시계');
+  ok(id('택배') === 'parcel' && id('병원') === 'firstaid' && id('화재') === 'extinguisher' && id('태양광') === 'solar', '새 물건: 택배 상자, 구급상자, 소화기, 태양광 패널');
+  ok(T.decorMatch('수정').weak && T.decorMatch('팀원').weak && !T.decorMatch('다회용기').weak, '흔한 말은 약한 키워드');
+  const objectsOf = kws => [...T.itemDecorIds({ type: 'memo', keywords: kws, themes: [] }).keys()];
+  ok(objectsOf(['정리', '다회용기', '수정']).join() === 'recycle', `구체적인 키워드가 있으면 흔한 말은 물건이 안 됨 (${objectsOf(['정리', '다회용기', '수정'])})`);
+  ok(objectsOf(['정리', '수정']).includes('papers'), '흔한 말뿐이면 그걸로 물건을 고름');
+
+  // 모든 물건이 어떤 자리에서도 멀쩡히 그려진다
+  const bad = T.DECOR.filter(d => /NaN|undefined/.test(d.place === 'wall' ? d.draw(0.5) : d.place === 'desk' ? d.draw(3.5, 3.2, T.DESK_Z) : d.draw(2.4, 1.5)));
+  ok(!bad.length, `물건 ${T.DECOR.length}종 그림에 잘못된 좌표 없음${bad.length ? ` → ${bad.map(d => d.id)}` : ''}`);
+  const dup = T.DECOR.flatMap(d => [...(d.words || []), ...(d.weak || [])].map(k => [k, d.id])).filter(([k], i, a) => a.findIndex(([x]) => x === k) !== i);
+  ok(!dup.length, `같은 단어가 두 물건에 없음${dup.length ? ` → ${dup.slice(0, 5)}` : ''}`);
+  ok(T.DECOR.filter(d => d.place === 'floor').every(d => ['low', 'mid', 'tall'].includes(d.height)), '바닥 물건마다 키 정보가 있음');
+
+  // 방 배치: 키 큰 물건이 자리를 잃지 않고, 한 자리에 둘이 놓이지 않는다
+  const R = T.R;
+  const allGroups = T.DECOR.map(decor => ({ decor, words: ['x'], count: 1, items: [] }));
+  const placed = R.decorPlacement({ decor: allGroups, talks: [] });
+  const floorPicked = allGroups.filter(g => g.decor.place === 'floor').slice(0, R.FLOOR_SLOTS.length);
+  const tallPicked = floorPicked.filter(g => g.decor.height === 'tall').length;
+  const svgAll = placed.objects.map(o => o.svg).join('');
+  const tallShown = floorPicked.filter(g => g.decor.height === 'tall' && svgAll.includes(`decor:${g.decor.id}"`)).length;
+  ok(tallShown === Math.min(tallPicked, R.FLOOR_SLOTS.filter(s => s.fit.includes('tall')).length), `키 큰 물건이 빠지지 않음 (${tallShown}/${tallPicked})`);
+  const zones = svgAll.match(/data-zone="decor:\w+"/g) || [];
+  ok(new Set(zones).size === zones.length && zones.length >= 16, `물건이 겹쳐 놓이지 않음 (${zones.length}개)`);
+  const near = R.FLOOR_SLOTS.flatMap((a, i) => R.FLOOR_SLOTS.slice(i + 1).filter(b => Math.hypot(a.x - b.x, a.y - b.y) < 0.9).map(b => [a, b]));
+  ok(!near.length, `바닥 자리끼리 충분히 떨어져 있음${near.length ? ` → ${JSON.stringify(near[0])}` : ''}`);
+  const wallIds = placed.walls.join('').match(/decor:\w+/g) || [];
+  ok(wallIds.length === 3 && new Set(wallIds).size === 3, `벽 물건은 자리마다 하나씩 (${wallIds.length}개)`);
+  const few = R.decorPlacement({ decor: [{ decor: T.DECOR_BY_ID.chart, words: ['통계'], count: 3, items: [] }, { decor: T.DECOR_BY_ID.recycle, words: ['재활용'], count: 1, items: [] }], talks: [] });
+  ok(few.objects.length === 2, '기록이 적으면 그만큼만 놓임');
 
   // AI 도구를 썼다고 로봇이 되지 않는다
   const decorOf = it => {
