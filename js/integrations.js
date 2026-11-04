@@ -337,7 +337,12 @@ async function syncAllWork(manual) {
   const links = state.links || {};
   const since = Date.now() - SYNC_DAYS * 864e5;
   const jobs = [];
-  const opened = async key => ({ ...conf[key], token: await openToken(conf[key]?.token) }); // 암호화된 토큰은 쓸 때만 푼다
+  // 암호화된 토큰은 쓸 때만 푼다. OAuth 토큰은 만료가 가까우면 먼저 갱신한다 (ONRQ-1)
+  const opened = async key => {
+    if (oauthExpiring(loadInteg()[key])) await refreshOAuth(key);
+    const c = loadInteg()[key];
+    return { ...c, token: await openToken(c?.token) };
+  };
   if (links.github && conf.github?.login) jobs.push(['github', async () => syncGithub(await opened('github'), links.github, since)]);
   if (links.figma?.length && conf.figma?.token) jobs.push(['figma', async () => syncFigma(await opened('figma'), links.figma, since)]);
   if (links.notion?.length && conf.notion?.token) jobs.push(['notion', async () => syncNotion(await opened('notion'), links.notion, since)]);
@@ -346,7 +351,11 @@ async function syncAllWork(manual) {
   const results = [];
   for (const [source, run] of jobs) {
     try {
-      const n = await run();
+      const n = await run().catch(async e => {
+        // 만료 시각을 몰랐거나 다른 곳에서 무효가 된 토큰: 한 번만 갱신해 다시 시도한다
+        if (e.status === 401 && await refreshOAuth(source)) return run();
+        throw e;
+      });
       setMyConnection(source, 'ok');
       results.push(`${SOURCES[source].name} ${n}개`);
     } catch (e) {
@@ -596,15 +605,19 @@ async function finishOAuthIfPending() {
   try {
     const res = await proxyCall(`/v1/oauth/${job.provider}`, { code: job.code, redirectUri: oauthRedirect() });
     const conf = loadInteg();
+    const expiry = {
+      refresh: res.refresh_token ? await sealToken(res.refresh_token) : null,
+      expiresAt: res.expires_in ? Date.now() + res.expires_in * 1000 : null,
+    };
     if (job.provider === 'notion') {
-      conf.notion = { token: await sealToken(res.access_token), oauth: true, userId: res.user?.id || '', userName: res.user?.name || '', users: res.user?.id ? [{ id: res.user.id, name: res.user.name }] : [] };
+      conf.notion = { token: await sealToken(res.access_token), oauth: true, userId: res.user?.id || '', userName: res.user?.name || '', users: res.user?.id ? [{ id: res.user.id, name: res.user.name }] : [], ...expiry };
     } else if (job.provider === 'figma') {
       const bearer = `Bearer ${res.access_token}`;
       const meF = await fg('/me', bearer);
-      conf.figma = { token: await sealToken(bearer), oauth: true, userId: meF.id, handle: meF.handle };
+      conf.figma = { token: await sealToken(bearer), oauth: true, userId: meF.id, handle: meF.handle, ...expiry };
     } else if (job.provider === 'github') {
       const login = (await gh('/user', res.access_token)).login;
-      conf.github = { token: await sealToken(res.access_token), oauth: true, login };
+      conf.github = { token: await sealToken(res.access_token), oauth: true, login, ...expiry };
     }
     saveInteg(conf);
     setMyConnection(job.provider, 'ok');
@@ -617,6 +630,34 @@ async function finishOAuthIfPending() {
   }
   oauthFinishing = false;
   render();
+}
+
+// 만료가 일주일 안으로 다가왔는지 (Figma 토큰은 90일)
+const OAUTH_REFRESH_MARGIN_MS = 7 * 864e5;
+function oauthExpiring(c) {
+  return Boolean(c?.oauth && c.refresh && c.expiresAt && Date.now() > c.expiresAt - Math.min(OAUTH_REFRESH_MARGIN_MS, (c.lifetime || Infinity) / 2));
+}
+
+// 토큰 갱신: 성공하면 true. 실패해도 지금 토큰은 그대로 두어, 아직 유효하면 계속 쓴다
+async function refreshOAuth(key) {
+  const c = loadInteg()[key];
+  if (!c?.oauth || !c.refresh || !proxyReady()) return false;
+  try {
+    const res = await proxyCall(`/v1/oauth/${key}/refresh`, { refreshToken: await openToken(c.refresh) });
+    const conf = loadInteg();
+    conf[key] = {
+      ...conf[key],
+      token: await sealToken(key === 'figma' ? `Bearer ${res.access_token}` : res.access_token),
+      refresh: res.refresh_token ? await sealToken(res.refresh_token) : c.refresh, // Figma는 refresh 토큰을 다시 쓴다
+      expiresAt: res.expires_in ? Date.now() + res.expires_in * 1000 : null,
+      lifetime: res.expires_in ? res.expires_in * 1000 : null,
+    };
+    saveInteg(conf);
+    return true;
+  } catch (e) {
+    console.warn(`${key} 토큰을 갱신하지 못했어요`, e);
+    return false;
+  }
 }
 
 // 연동 화면 위쪽: AI 요약·OAuth 상태 (프록시가 있을 때만)
@@ -632,9 +673,20 @@ function aiProxyCardHTML() {
       <header><h2>🤖 AI 정리</h2>${f.summarize ? '<span class="vis-badge vis-prof">켜짐</span>' : '<span class="vis-badge vis-me">프록시에 키 없음</span>'}</header>
       <p class="muted sm">회의·AI 대화·내 발언을 소형 AI 모델(${esc(aiCardCfg.model || '')})로 요약하고 키워드를 뽑아요. 한도(하루 ${aiCardCfg.limits?.dailyRequestsPerUser ?? '-'}회, 월 ${(aiCardCfg.limits?.monthlyBudgetKRW ?? 0).toLocaleString()}원)를 넘거나 꺼 두면 규칙 기반으로 정리해요.${f.vision ? ' Figma 화면 그림도 읽어요.' : ''}${f.turn ? ' 회의 중계 서버도 켜져 있어요.' : ''}</p>
       <label class="check sm"><input type="checkbox" data-ig="aiswitch" ${aiSwitchOn() ? 'checked' : ''} ${f.summarize ? '' : 'disabled'}> AI 정리 쓰기 (이 브라우저)</label>
+      ${f.summarize && proxyReady() ? '<p class="muted sm" id="aiUsage"></p>' : ''}
       ${oauthBtns ? `<h3>계정으로 연결 (토큰 붙여넣기 대신)</h3><div class="modal-actions" style="justify-content:flex-start">${oauthBtns}</div>` : ''}
       ${proxyReady() ? '' : '<p class="notice sm">AI 정리와 계정 연결은 Google 로그인 후 온라인 방에서 쓸 수 있어요.</p>'}
     </article>`;
+}
+
+// 오늘 쓴 양 (연동 화면이 그려진 뒤 채운다)
+function fillAiUsage() {
+  const box = document.getElementById('aiUsage');
+  if (!box || box.textContent) return;
+  box.textContent = ' ';
+  proxyCall('/v1/usage', null, 'GET')
+    .then(u => { box.textContent = `오늘 ${u.today}/${u.dailyLimit}회 사용 · 이번 달 ${u.monthKRW.toLocaleString()}원 / ${u.monthlyBudgetKRW.toLocaleString()}원`; })
+    .catch(() => { box.textContent = ''; });
 }
 
 document.addEventListener('click', e => {

@@ -435,6 +435,92 @@ async function scenarioLegacy() {
   B.__errors.length = 0;
 }
 
+// ---------- 시나리오: 프록시(가짜 Claude·OAuth·TURN, 실제 Worker 코드) + 실제 규칙 ----------
+window.scenarioAi = async () => {
+  say('\n=== 프록시: AI 정리·토큰 암호화·OAuth·TURN');
+  closeAll();
+  await wipe();
+  const A = await open('uA', { proxy: true }), B = await open('uB', { proxy: true });
+  const T = await makeRoom(A, 'AI 방');
+  await joinAs(B, await invite(A, 'student'), '김단유');
+  const mB = B.eval('state.meId');
+  ok(A.eval('proxyReady()') === true, '프록시 사용 가능 (로그인 + 주소)');
+
+  const sealed = await A.eval(`sealToken('ghp_supersecret')`);
+  ok(sealed?.sealed === 1 && !JSON.stringify(sealed).includes('supersecret'), '토큰 암호화 (LS-6)');
+  ok(await A.eval(`openToken(${JSON.stringify(sealed)})`) === 'ghp_supersecret', '암호화한 토큰 복원');
+
+  // Meet 녹취 → AI 회의 요약
+  A.eval(`openMeetImport('안치성: 다회용기 순환 서비스를 주제로 하기로 했어요\\n김단유: 설문과 예산은 제가 정리할게요', '주간 회의.txt', Date.now())`);
+  await sleep(150);
+  await A.eval(`importMeet(document.querySelector('#meetImportForm'))`);
+  await until(async () => (await list(`teams/${T}/calls`)).some(c => c.source === 'meet'));
+  const c = (await list(`teams/${T}/calls`)).find(x => x.source === 'meet');
+  ok(c?.summaryBy === 'ai' && c.summary.includes('🤖 AI 요약') && c.summary.startsWith('참석:'), 'AI 회의 요약 (사실 줄 + 요약)');
+  ok(c?.decisions?.[0] === '1차 주제는 다회용기 순환 서비스', 'AI가 뽑은 정한 것을 회의에 저장');
+  await until(() => B.eval(`state.calls.some(x => x.source === 'meet')`));
+  await B.eval('syncMyTalks()');
+  await until(async () => (await list(`teams/${T}/items`)).some(i => i.type === 'talk' && i.memberId === mB));
+  const talk = (await list(`teams/${T}/items`)).find(i => i.type === 'talk' && i.memberId === mB);
+  ok(talk?.content.includes('🤖 AI 요약') && JSON.stringify(talk.talk.keywords) === JSON.stringify(['설문', '예산']), '내가 한 말 AI 요약 + 키워드');
+  await until(() => B.eval(`state.items.some(i => i.type === 'talk')`));
+  const cand = JSON.parse(B.eval(`JSON.stringify(decisionCandidates().map(x => x.text))`));
+  ok(cand.includes('1차 주제는 다회용기 순환 서비스'), '말투가 달라도 AI가 뽑은 결정이 후보로 (RQ-9)');
+
+  // AI 대화 재정리
+  A.eval(`aiImport = [{ sourceId: 'x1', title: '회수율 조사', createdAt: Date.now(), tool: 'ChatGPT', transcript: '👤 다회용기 회수율 통계 알려줘\\n\\n🤖 90%입니다', firstPrompt: '다회용기 회수율 통계 알려줘', messageCount: 2 }]; renderAiImportModal(); document.querySelector('[data-ai-idx]').click(); importSelectedAi();`);
+  await until(() => A.eval(`state.items.some(i => i.type === 'ai' && i.ai.summaryBy === 'ai')`));
+  const aiItem = JSON.parse(A.eval(`JSON.stringify(state.items.find(i => i.title === '회수율 조사'))`));
+  ok(aiItem.ai.summaryBy === 'ai' && aiItem.ai.purpose === 'research' && aiItem.keywords.includes('회수율'), 'AI 대화: 요약·목적·키워드 재정리');
+  await until(async () => (await getDoc(`teams/${T}/items/${aiItem.id}`))?.ai?.summaryBy === 'ai');
+  ok(true, '재정리 결과가 DB에 저장 (규칙 통과)');
+
+  const ice = await A.eval('turnIceServers()');
+  ok(ice?.[0]?.urls?.[0]?.startsWith('turn:') && ice[0].username === 'u', '회의 중계 서버 자격');
+
+  A.eval('setAiSwitch(false)');
+  const off = await A.eval(`meetingSummary([{ name: '안치성', text: '발표는 제가 하기로 했어요', at: 1 }], ['안치성'])`);
+  ok(off.summaryBy === 'rule' && off.decisions.length === 1, 'AI 끄면 규칙 기반 (결정 후보는 그대로)');
+  A.eval('setAiSwitch(true)');
+
+  // OAuth 왕복
+  A.eval(`sessionStorage.setItem('brainroom:oauth-pending', JSON.stringify({ provider: 'notion', state: 's1', at: Date.now() }))`);
+  frames.uA.src = `/app.html?u=uA&proxy=${encodeURIComponent(PROXY)}&code=c1&state=s1`;
+  await until(() => { const w = frames.uA.contentWindow; return w.location.search.indexOf('u=') < 0 && w.eval('typeof loadInteg === "function"'); });
+  const W = frames.uA.contentWindow;
+  ok(!W.location.search.includes('code='), 'OAuth 코드가 주소창에서 바로 사라짐');
+  await until(() => W.eval(`loadInteg().notion?.oauth === true`), 15000);
+  const integ = JSON.parse(W.localStorage.getItem('brainroom:integrations') || '{}');
+  ok(integ.notion?.userId === 'notion-user-1', 'Notion OAuth 연결 + 내 Notion 계정 자동 인식');
+  const raw = W.localStorage.getItem('brainroom:integrations');
+  ok(!raw.includes('ntn_oauth_secret') && !raw.includes('nr_1') && integ.notion.expiresAt > Date.now(), '토큰과 갱신 토큰 모두 암호화 저장, 만료 시각 기록');
+
+  // 만료 임박 → 갱신
+  ok(W.eval(`oauthExpiring(loadInteg().notion)`) === true, '수명이 짧은 토큰은 갱신 대상');
+  ok(await W.eval(`refreshOAuth('notion')`) === true, '토큰 갱신 성공');
+  ok(await W.eval(`openToken(loadInteg().notion.token)`) === 'ntn_refreshed' && await W.eval(`openToken(loadInteg().notion.refresh)`) === 'nr_2', '새 토큰 둘 다 바꿔 저장 (Notion은 갱신 토큰도 바뀜)');
+  ok(W.eval(`oauthExpiring({ oauth: true, refresh: 'x', expiresAt: Date.now() + 80 * 864e5 })`) === false, 'Figma 90일 토큰: 만료가 멀면 갱신 안 함');
+  ok(W.eval(`oauthExpiring({ oauth: true, refresh: 'x', expiresAt: Date.now() + 3 * 864e5 })`) === true, 'Figma 90일 토큰: 일주일 안으로 다가오면 갱신');
+  ok(W.eval(`oauthExpiring({ oauth: true, expiresAt: 1 })`) === false, '갱신 토큰이 없으면 갱신 시도 안 함');
+
+  // 위조된 state는 무시
+  W.eval(`sessionStorage.setItem('brainroom:oauth-pending', JSON.stringify({ provider: 'notion', state: 'good', at: Date.now() }))`);
+  frames.uA.src = `/app.html?u=uA&proxy=${encodeURIComponent(PROXY)}&code=evil&state=forged`;
+  await sleep(2000);
+  const W2 = frames.uA.contentWindow;
+  ok(W2.location.search.includes('state=forged') && !W2.sessionStorage.getItem('brainroom:oauth-code'), '위조된 state 무시 (CSRF 방지)');
+
+  // 사용량 표시
+  await until(() => W2.eval('cloud.loaded && state.meId'));
+  W2.eval(`go('integrations')`);
+  await until(() => W2.document.querySelector('.ai-card'), 5000);
+  await until(() => /오늘 \d+\/\d+회/.test(W2.document.getElementById('aiUsage')?.textContent || ''), 5000);
+  ok(/오늘 \d+\/\d+회/.test(W2.document.getElementById('aiUsage')?.textContent || ''), `연동 화면에 AI 사용량 (${W2.document.getElementById('aiUsage')?.textContent})`);
+  const plog = await (await fetch(`${PROXY}/test-log`)).json();
+  ok(plog.filter(u => u === '/v1/messages').length >= 3, `프록시가 Claude를 ${plog.filter(u => u === '/v1/messages').length}번 호출`);
+  noDenied(W2, 'A'); noDenied(B, 'B');
+};
+
 async function run() {
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();

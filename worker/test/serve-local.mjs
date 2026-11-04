@@ -40,7 +40,8 @@ const upstream = http.createServer(async (req, res) => {
   log.push(req.url);
   if (req.url === '/jwks') return send(200, { keys: [jwk] });
   if (req.url === '/v1/messages') return send(200, fakeClaude(JSON.parse(raw)));
-  if (req.url === '/notion-token') return send(200, { access_token: 'ntn_oauth_secret', owner: { type: 'user', user: { id: 'notion-user-1', name: '안치성' } }, workspace_name: '호랑이양말' });
+  if (req.url === '/notion-token' && JSON.parse(raw).grant_type === 'refresh_token') return send(200, { access_token: 'ntn_refreshed', refresh_token: 'nr_2', expires_in: 3600 });
+  if (req.url === '/notion-token') return send(200, { access_token: 'ntn_oauth_secret', refresh_token: 'nr_1', expires_in: 3600, owner: { type: 'user', user: { id: 'notion-user-1', name: '안치성' } }, workspace_name: '호랑이양말' });
   if (req.url === '/turn') return send(201, { iceServers: { urls: ['turn:turn.example:3478?transport=udp'], username: 'u', credential: 'c' } });
   send(404, {});
 });

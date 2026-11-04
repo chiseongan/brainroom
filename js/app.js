@@ -728,7 +728,7 @@ function render() {
   else if (state.view === 'decisions') renderDecisions();
   else if (state.view === 'report') renderReport();
   else if (state.view === 'calls') renderMeetings();
-  else if (state.view === 'integrations') renderIntegrations();
+  else if (state.view === 'integrations') { renderIntegrations(); fillAiUsage(); }
   else renderMeeting();
   if (panelSpec) renderPanel();
   if (!isProfView()) scheduleWorkSync(); // 연동 도구에서 새 작업 가져오기 (15분마다)

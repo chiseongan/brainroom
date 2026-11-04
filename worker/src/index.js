@@ -5,9 +5,11 @@
 //   POST /v1/summarize          기록 요약·핵심 키워드·정한 것·AI 사용 목적  — Firebase 로그인 필요
 //   POST /v1/vision             Figma 화면 그림 → 키워드                    — 로그인 필요
 //   POST /v1/oauth/:provider    Notion·Figma·GitHub OAuth 코드 → 토큰 교환   — 로그인 필요
+//   POST /v1/oauth/:provider/refresh  만료되는 토큰 갱신 (Figma 90일 등)        — 로그인 필요
+//   GET  /v1/usage              오늘 쓴 요청 수·이번 달 쓴 금액                 — 로그인 필요
 //   GET  /v1/turn               회의 중계 서버(TURN) 임시 자격               — 로그인 필요
 //
-// 비용 (SSRD PR-1, Win-AGRE-5): 요약에는 소형 모델(Claude Haiku 5.5)만, 사용자별 하루 요청 수와 월 예산(원)을 넘으면 429.
+// 비용 (SSRD PR-1, Win-AGRE-5): 요약에는 소형 모델(Claude Haiku 5.5)만, 사용자별 하루 요청 수, 하루·월 예산(원)을 넘으면 429.
 // 앱은 429·오류를 받으면 규칙 기반 요약으로 돌아간다.
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -17,13 +19,14 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 const MODEL = 'claude-haiku-5-5';
 const PRICE_USD_PER_MTOK = { input: 0.10, output: 0.50 }; // 프롬프트 10만 토큰 이하 기준
 const MAX_TEXT_CHARS = 200000;
+const MAX_BODY_BYTES = 1024 * 1024; // 한글 20만 자 + 여유
 const PURPOSES = ['research', 'draft', 'code', 'translate', 'idea', 'etc'];
 
 // ---------- 응답 도우미 ----------
 
 function corsHeaders(req, env) {
   const origin = req.headers.get('Origin') || '';
-  const allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+  const allowed = allowedOrigins(env);
   return {
     'Access-Control-Allow-Origin': allowed.includes(origin) ? origin : allowed[0] || '',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -36,12 +39,25 @@ function corsHeaders(req, env) {
 const json = (req, env, body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', ...corsHeaders(req, env) } });
 
+const allowedOrigins = env => (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+
 class HttpError extends Error {
   constructor(status, code, message) {
     super(message || code);
     this.status = status;
     this.code = code;
   }
+}
+
+async function readJson(req) {
+  if (Number(req.headers.get('Content-Length') || 0) > MAX_BODY_BYTES) throw new HttpError(413, 'too_long');
+  const raw = await req.text();
+  if (raw.length > MAX_BODY_BYTES) throw new HttpError(413, 'too_long');
+  try {
+    const body = JSON.parse(raw);
+    if (body && typeof body === 'object') return body;
+  } catch (e) { /* 아래에서 거절 */ }
+  throw new HttpError(400, 'bad_json');
 }
 
 // ---------- Firebase 로그인 확인 (ID 토큰 서명·대상·만료 검사) ----------
@@ -86,6 +102,7 @@ const usageStore = env => (env.USAGE
   : { get: async k => memoryStore.get(k) ?? null, put: async (k, v) => { memoryStore.set(k, v); } });
 const dayKey = uid => `d:${new Date().toISOString().slice(0, 10)}:${uid}`;
 const monthKey = () => `m:${new Date().toISOString().slice(0, 7)}`;
+const budgetDayKey = () => `b:${new Date().toISOString().slice(0, 10)}`;
 
 async function checkLimits(env, uid) {
   const store = usageStore(env);
@@ -93,6 +110,9 @@ async function checkLimits(env, uid) {
   if (today >= Number(env.DAILY_REQUESTS_PER_USER || 60)) throw new HttpError(429, 'daily_limit', '오늘 쓸 수 있는 AI 요청을 다 썼어요');
   const spent = Number(await store.get(monthKey()) || 0);
   if (spent >= Number(env.MONTHLY_BUDGET_KRW || 50000)) throw new HttpError(429, 'monthly_budget', '이번 달 AI 예산을 다 썼어요');
+  // 하루 상한: 누가 많이 써도 월 예산을 하루에 다 태우지 않게 (아무 Google 계정이나 로그인할 수 있으므로)
+  const dayTotal = Number(await store.get(budgetDayKey()) || 0);
+  if (dayTotal >= Number(env.DAILY_BUDGET_KRW || 5000)) throw new HttpError(429, 'daily_budget', '오늘 AI 예산을 다 썼어요');
 }
 
 async function recordUsage(env, uid, usage) {
@@ -101,7 +121,18 @@ async function recordUsage(env, uid, usage) {
   const usd = ((usage?.input_tokens || 0) * PRICE_USD_PER_MTOK.input + (usage?.output_tokens || 0) * PRICE_USD_PER_MTOK.output) / 1e6;
   const krw = usd * Number(env.KRW_PER_USD || 1400);
   await store.put(monthKey(), String(Number(await store.get(monthKey()) || 0) + krw));
+  await store.put(budgetDayKey(), String(Number(await store.get(budgetDayKey()) || 0) + krw));
   return krw;
+}
+
+async function usage(env, user) {
+  const store = usageStore(env);
+  return {
+    today: Number(await store.get(dayKey(user.uid)) || 0),
+    dailyLimit: Number(env.DAILY_REQUESTS_PER_USER || 60),
+    monthKRW: Math.round(Number(await store.get(monthKey()) || 0)),
+    monthlyBudgetKRW: Number(env.MONTHLY_BUDGET_KRW || 50000),
+  };
 }
 
 // ---------- Claude 호출 ----------
@@ -133,16 +164,19 @@ const KIND_HINT = {
 
 function anthropicClient(env) {
   if (!env.ANTHROPIC_API_KEY) throw new HttpError(503, 'llm_not_configured');
-  return new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}) });
+  // 요약은 짧은 요청이고 앱에 규칙 기반 대안이 있으니 오래 기다리지 않는다
+  return new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: 30000, maxRetries: 1, ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}) });
 }
 
 function cleanKeywords(list) {
   return [...new Set((list || []).map(k => String(k).trim().replace(/^#/, '')).filter(k => k.length >= 2 && k.length <= 20))].slice(0, 8);
 }
 
-async function callClaude(env, params) {
+// 응답이 온 요청은 결과와 상관없이 집계한다: 거절·잘림도 토큰을 쓰므로 빼면 한도를 우회해 비용이 나갈 수 있다
+async function callClaude(env, user, params) {
   try {
     const res = await anthropicClient(env).messages.parse(params);
+    res.costKRW = await recordUsage(env, user.uid, res.usage);
     // 거절은 HTTP 200 + stop_reason "refusal" 로 온다 → 내용을 읽기 전에 확인
     if (res.stop_reason === 'refusal') throw new HttpError(422, 'refusal', '이 내용은 AI로 정리하지 않았어요');
     if (res.stop_reason === 'max_tokens') throw new HttpError(502, 'too_long');
@@ -160,21 +194,21 @@ async function callClaude(env, params) {
 
 async function summarize(req, env, user) {
   anthropicClient(env); // 설정이 안 돼 있으면 한도를 쓰기 전에 바로 503
-  const { kind, text } = await req.json();
+  const { kind, text } = await readJson(req);
   if (!KIND_HINT[kind]) throw new HttpError(400, 'bad_kind');
   const body = String(text || '').trim();
   if (!body) throw new HttpError(400, 'empty');
   // 잘라서 보내지 않는다: 너무 길면 앱이 규칙 기반 요약을 쓰도록 알린다
   if (body.length > MAX_TEXT_CHARS) throw new HttpError(413, 'too_long', '기록이 너무 길어 AI 요약 대신 규칙 기반으로 정리해요');
   await checkLimits(env, user.uid);
-  const res = await callClaude(env, {
+  const res = await callClaude(env, user, {
     model: MODEL,
     max_tokens: 2000,
     output_config: { effort: 'low', format: zodOutputFormat(SummarySchema) },
     system: BASE_RULES,
-    messages: [{ role: 'user', content: `${KIND_HINT[kind]}\n<record kind="${kind}">\n${body}\n</record>` }],
+    // 글 안의 record 태그는 무력화한다 (데이터 칸을 닫고 지시를 끼워 넣지 못하게)
+    messages: [{ role: 'user', content: `${KIND_HINT[kind]}\n<record kind="${kind}">\n${body.replace(/<(\/?)record/gi, '‹$1record')}\n</record>` }],
   });
-  const krw = await recordUsage(env, user.uid, res.usage);
   const out = res.parsed_output;
   return {
     summary: out.summary.trim(),
@@ -182,17 +216,27 @@ async function summarize(req, env, user) {
     decisions: (out.decisions || []).map(s => s.trim()).filter(Boolean).slice(0, 5),
     purpose: PURPOSES.includes(out.purpose) ? out.purpose : 'etc',
     model: MODEL,
-    costKRW: Math.round(krw * 100) / 100,
+    costKRW: Math.round(res.costKRW * 100) / 100,
   };
+}
+
+// Figma가 내주는 그림 주소만 받는다 (이 서버를 아무 그림이나 읽히는 데 쓰지 못하게)
+function isFigmaImage(u) {
+  try {
+    const { protocol, hostname } = new URL(u);
+    return protocol === 'https:' && (hostname.endsWith('.figma.com') || /^figma[\w-]*\.s3[\w.-]*\.amazonaws\.com$/.test(hostname));
+  } catch (e) {
+    return false;
+  }
 }
 
 async function vision(req, env, user) {
   anthropicClient(env);
-  const { images } = await req.json();
-  const urls = (images || []).filter(u => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, 3);
+  const { images } = await readJson(req);
+  const urls = (Array.isArray(images) ? images : []).filter(isFigmaImage).slice(0, 3);
   if (!urls.length) throw new HttpError(400, 'no_images');
   await checkLimits(env, user.uid);
-  const res = await callClaude(env, {
+  const res = await callClaude(env, user, {
     model: MODEL,
     max_tokens: 1000,
     output_config: { effort: 'low', format: zodOutputFormat(VisionSchema) },
@@ -202,8 +246,7 @@ async function vision(req, env, user) {
       content: [...urls.map(url => ({ type: 'image', source: { type: 'url', url } })), { type: 'text', text: '이 디자인 화면들의 주제 키워드를 뽑아 줘.' }],
     }],
   });
-  const krw = await recordUsage(env, user.uid, res.usage);
-  return { keywords: cleanKeywords(res.parsed_output.keywords), model: MODEL, costKRW: Math.round(krw * 100) / 100 };
+  return { keywords: cleanKeywords(res.parsed_output.keywords), model: MODEL, costKRW: Math.round(res.costKRW * 100) / 100 };
 }
 
 // ---------- OAuth (client secret은 여기에만 있다) ----------
@@ -216,6 +259,12 @@ const OAUTH = {
       headers: { Authorization: `Basic ${btoa(`${env.NOTION_CLIENT_ID}:${env.NOTION_CLIENT_SECRET}`)}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
       body: JSON.stringify({ grant_type: 'authorization_code', code, redirect_uri: redirectUri }),
     }),
+    // 갱신하면 access·refresh 토큰이 모두 새로 나온다 (앱이 둘 다 바꿔 저장)
+    refresh: async refreshToken => fetch(env.NOTION_TOKEN_URL || 'https://api.notion.com/v1/oauth/token', {
+      method: 'POST',
+      headers: { Authorization: `Basic ${btoa(`${env.NOTION_CLIENT_ID}:${env.NOTION_CLIENT_SECRET}`)}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
+      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken }),
+    }),
     user: r => ({ id: r.owner?.user?.id || '', name: r.owner?.user?.name || '', workspace: r.workspace_name || '' }),
   }),
   figma: env => ({
@@ -224,6 +273,12 @@ const OAUTH = {
       method: 'POST',
       headers: { Authorization: `Basic ${btoa(`${env.FIGMA_CLIENT_ID}:${env.FIGMA_CLIENT_SECRET}`)}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ redirect_uri: redirectUri, code, grant_type: 'authorization_code' }),
+    }),
+    // access 토큰 수명 90일. refresh 토큰은 그대로 다시 쓰고, 갱신하면 이전 access 토큰은 무효
+    refresh: async refreshToken => fetch(env.FIGMA_REFRESH_URL || 'https://api.figma.com/v1/oauth/refresh', {
+      method: 'POST',
+      headers: { Authorization: `Basic ${btoa(`${env.FIGMA_CLIENT_ID}:${env.FIGMA_CLIENT_SECRET}`)}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ refresh_token: refreshToken }),
     }),
     user: r => ({ id: r.user_id_string || String(r.user_id || ''), name: '' }),
   }),
@@ -234,6 +289,12 @@ const OAUTH = {
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, code, redirect_uri: redirectUri }),
     }),
+    // GitHub OAuth 앱 토큰은 만료되지 않지만, 만료를 켠 GitHub 앱을 쓰면 이 경로로 갱신한다
+    refresh: async refreshToken => fetch(env.GITHUB_TOKEN_URL || 'https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, grant_type: 'refresh_token', refresh_token: refreshToken }),
+    }),
     user: () => ({ id: '', name: '' }),
   }),
 };
@@ -243,8 +304,8 @@ async function oauthExchange(req, env, provider) {
   if (!make) throw new HttpError(404, 'unknown_provider');
   const p = make(env);
   if (!p.id || !p.secret) throw new HttpError(503, 'oauth_not_configured');
-  const { code, redirectUri } = await req.json();
-  const allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim());
+  const { code, redirectUri } = await readJson(req);
+  const allowed = allowedOrigins(env);
   let origin = '';
   try { origin = new URL(redirectUri).origin; } catch (e) { /* 아래에서 거절 */ }
   if (!code || !allowed.includes(origin)) throw new HttpError(400, 'bad_redirect');
@@ -255,6 +316,19 @@ async function oauthExchange(req, env, provider) {
     access_token: data.access_token, refresh_token: data.refresh_token || null, expires_in: data.expires_in || null,
     user: p.user(data),
   };
+}
+
+async function oauthRefresh(req, env, provider) {
+  const make = OAUTH[provider];
+  if (!make) throw new HttpError(404, 'unknown_provider');
+  const p = make(env);
+  if (!p.id || !p.secret) throw new HttpError(503, 'oauth_not_configured');
+  const { refreshToken } = await readJson(req);
+  if (!refreshToken || typeof refreshToken !== 'string') throw new HttpError(400, 'no_refresh_token');
+  const res = await p.refresh(refreshToken);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) throw new HttpError(401, 'refresh_failed', data.error_description || data.error || `${res.status}`);
+  return { access_token: data.access_token, refresh_token: data.refresh_token || null, expires_in: data.expires_in || null };
 }
 
 // ---------- 회의 중계 서버 (Cloudflare Realtime TURN) ----------
@@ -283,7 +357,7 @@ function config(env) {
   return {
     features: { summarize: Boolean(env.ANTHROPIC_API_KEY), vision: Boolean(env.ANTHROPIC_API_KEY), turn: Boolean(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN), oauth },
     model: MODEL,
-    limits: { dailyRequestsPerUser: Number(env.DAILY_REQUESTS_PER_USER || 60), monthlyBudgetKRW: Number(env.MONTHLY_BUDGET_KRW || 50000) },
+    limits: { dailyRequestsPerUser: Number(env.DAILY_REQUESTS_PER_USER || 60), monthlyBudgetKRW: Number(env.MONTHLY_BUDGET_KRW || 50000), dailyBudgetKRW: Number(env.DAILY_BUDGET_KRW || 5000) },
   };
 }
 
@@ -293,11 +367,15 @@ export default {
     const { pathname } = new URL(req.url);
     try {
       if (req.method === 'GET' && pathname === '/v1/config') return json(req, env, config(env));
+      // 브라우저 요청은 BrainRoom 주소에서 온 것만
+      const origin = req.headers.get('Origin');
+      if (origin && !allowedOrigins(env).includes(origin)) throw new HttpError(403, 'bad_origin');
       const user = await verifyFirebaseUser(req, env);
       if (req.method === 'POST' && pathname === '/v1/summarize') return json(req, env, await summarize(req, env, user));
       if (req.method === 'POST' && pathname === '/v1/vision') return json(req, env, await vision(req, env, user));
-      const oauth = pathname.match(/^\/v1\/oauth\/([a-z]+)$/);
-      if (req.method === 'POST' && oauth) return json(req, env, await oauthExchange(req, env, oauth[1]));
+      const oauth = pathname.match(/^\/v1\/oauth\/([a-z]+)(\/refresh)?$/);
+      if (req.method === 'POST' && oauth) return json(req, env, await (oauth[2] ? oauthRefresh : oauthExchange)(req, env, oauth[1]));
+      if (req.method === 'GET' && pathname === '/v1/usage') return json(req, env, await usage(env, user));
       if (req.method === 'GET' && pathname === '/v1/turn') return json(req, env, await turnCredentials(env));
       throw new HttpError(404, 'not_found');
     } catch (e) {

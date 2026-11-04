@@ -6,11 +6,15 @@ main = "src/index.js"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 
+[observability]
+enabled = true
+
 [vars]
 FIREBASE_PROJECT_ID = "brainroom-777b0"
 ALLOWED_ORIGINS = "https://chiseongan.github.io,http://localhost:5173"
 # 비용 상한 (SSRD PR-1: 월 5만 원)
 MONTHLY_BUDGET_KRW = "50000"
+DAILY_BUDGET_KRW = "5000"
 KRW_PER_USD = "1400"
 DAILY_REQUESTS_PER_USER = "60"
 # OAuth 앱의 공개 client id (비밀 값은 secret으로). 비워 두면 그 서비스의 OAuth 연결 버튼이 안 보인다
