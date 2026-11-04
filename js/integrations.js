@@ -59,7 +59,8 @@ async function apiGet(source, url, token, init = {}) {
     figma: String(token).startsWith('Bearer ') ? { Authorization: token } : { 'X-Figma-Token': token }, // OAuth 토큰은 'Bearer …'로 보관
     notion: { Authorization: `Bearer ${token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' },
   }[source];
-  const res = await fetch(url, { ...init, headers });
+  // 샘플 체험에서는 밖으로 나가지 않고 가상 응답을 쓴다 (js/sampleapi.js)
+  const res = guestMode && typeof sampleFetch === 'function' ? await sampleFetch(url) : await fetch(url, { ...init, headers });
   if (!res.ok) {
     let detail = '';
     try { detail = (await res.json()).message || ''; } catch (e) { /* 무시 */ }
@@ -330,6 +331,7 @@ function setMyConnection(source, status) {
 }
 
 async function syncAllWork(manual) {
+  if (guestMode) return manual ? loadSampleApi(true) : undefined;
   if (workRunning || !state?.meId || isProfView() || guestMode || (state.teamId && !cloud.loaded)) return;
   const conf = loadInteg();
   const last = conf.lastSync?.[syncKey()] || 0;
@@ -408,11 +410,12 @@ function renderIntegrations() {
         <p class="muted">각자 <b>본인 토큰</b>으로 연결하고, <b>본인 작업만</b> 가져와요. 토큰은 이 브라우저에만 <b>암호화해서</b> 저장되고 팀·서버로 올라가지 않아요. 최근 ${SYNC_DAYS}일 작업을 15분마다 가져와요.</p>
       </div>
       <div class="filters">
-        <span class="muted sm">${last ? `마지막으로 가져온 시각 ${fmtDate(last)}` : '아직 가져온 적 없어요'}</span>
+        <span class="muted sm">${guestMode ? '샘플 데이터를 보여 주는 중이에요' : last ? `마지막으로 가져온 시각 ${fmtDate(last)}` : '아직 가져온 적 없어요'}</span>
         <button class="btn primary" data-ig="sync">지금 가져오기</button>
       </div>
     </div>
 
+    ${guestMode ? `<p class="notice">🎲 <b>샘플 체험 중이에요.</b> 아래 연결 상태와 방의 작업 기록은 GitHub·Figma·Notion API 응답 형식으로 만든 <b>가상 데이터</b>이고, 실제 서비스로 요청을 보내지 않아요. <b>지금 가져오기</b>를 누르면 새 커밋이 생긴 것처럼 보여 줘요. 실제로 연결하려면 로그인하세요.</p>` : ''}
     <div class="integ-grid">
       ${aiProxyCardHTML()}
       <article class="card integ">

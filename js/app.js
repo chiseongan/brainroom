@@ -771,6 +771,7 @@ document.addEventListener('click', e => {
     state = sampleWorkspace();
     render();
     toast('샘플 팀 "캡스톤 3조"로 체험 중이에요 (저장되지 않아요)');
+    loadSampleApi(); // 연동 화면과 방 물건까지 볼 수 있게 가상 API 데이터를 채운다
     return;
   }
   if (t.closest('#exitGuestBtn')) {

@@ -16,9 +16,10 @@ function makeApp(fakeFetch, names = ['안치성', '김단유', '박채연']) {
     document: { querySelector: () => null, addEventListener() {} }, window: {}, navigator: {},
   };
   vm.createContext(ctx);
-  vm.runInContext(['themes', 'nlp', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
+  vm.runInContext(['themes', 'nlp', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport', 'sampleapi'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
     + `\n;var guestMode = false, authUser = null, cloud = { loaded: true };
     function render() {} function toast() {} function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } function fmtDate() { return ''; } function trunc(s) { return s; }
+    async function aiFeature() { return false; }
     function hashCode(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return Math.abs(h); }
     state = newWorkspace('t', ${JSON.stringify(names)}); state.meId = state.members[0].id;
     globalThis.T = { get state() { return state; }, parseTranscript, guessMember, figmaTextFromDocument, coreKeywords, upsertWork, deleteItem, roomDecorGroups,
@@ -211,6 +212,39 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
     ok(!JSON.stringify(forProf).includes('비밀주제') && !JSON.stringify(forProf).includes('다회용기'), '교수자 요약에 비공개 내용이 없음');
     const empty = T.weeklySummary({ members: W.state.members, items: [] }, ws);
     ok(empty.total === 0 && empty.decisions.length === 0, '기록이 없는 주');
+  }
+
+  console.log('--- 샘플 체험의 가상 API 데이터');
+  {
+    let realCalls = 0;
+    const S = makeApp(async () => { realCalls++; throw new Error('실제 네트워크를 쓰면 안 된다'); }, ['지민', '서준', '하은', '도윤']);
+    const run = code => vm.runInContext(code, S.ctx);
+    run('guestMode = true');
+    const me = S.state.meId;
+    const added = await run('loadSampleApi()');
+    const works = S.state.items.filter(i => i.type === 'work');
+    console.log(`    작업 ${works.length}개:`, works.map(w => w.work.source).reduce((m, s) => ({ ...m, [s]: (m[s] || 0) + 1 }), {}));
+    ok(realCalls === 0, '실제 네트워크 요청 없음');
+    ok(added === works.length && works.length >= 15, `가져오기 코드로 작업이 생김 (${works.length}개)`);
+    ok(S.state.meId === me, '가져온 뒤 현재 사용자가 그대로');
+    const m = S.state.members;
+    const ofMember = (i, src) => works.filter(w => w.memberId === m[i].id && w.work.source === src);
+    ok(ofMember(0, 'github').length === 4 && ofMember(1, 'github').length === 4, '팀원마다 자기 커밋·PR만');
+    ok(ofMember(2, 'figma').length === 3 && ofMember(0, 'figma').length === 2 && !ofMember(1, 'figma').length, 'Figma: 자기 버전·댓글만, 미연결 팀원은 없음');
+    ok(ofMember(1, 'notion').length === 2 && ofMember(2, 'notion').length === 2 && !ofMember(0, 'notion').length, 'Notion: 마지막 수정자·자기 댓글만');
+    ok(works.filter(w => w.work.ai).length === 3, 'AI 공동 작성 커밋 표시');
+    ok(works.every(w => w.url === ''), '가상 데이터에는 갈 곳 없는 링크가 없음');
+    ok(m[3].connections.github === 'ok' && !m[3].connections.figma, '도윤은 GitHub만 연결 (연동 안 됨 표시용)');
+    const objs = i => S.roomDecorGroups(S.state.items.filter(x => x.memberId === m[i].id)).map(g => g.decor.id);
+    ok(objs(0).includes('laptop') && objs(0).includes('safe') && objs(0).includes('art'), `지민 방: 노트북·금고·이젤 (${objs(0).slice(0, 8)})`);
+    ok(objs(2).includes('art') && objs(2).includes('papers'), `하은 방: 이젤·서류 (${objs(2).slice(0, 8)})`);
+    ok(objs(3).includes('robot') && objs(3).includes('gamepad'), `도윤 방: 로봇·게임패드 (${objs(3).slice(0, 8)})`);
+    ok(await run('syncAllWork(true)') === 1, '지금 가져오기: 새 커밋 1개');
+    ok(await run('syncAllWork(false)') === undefined, '자동 가져오기는 샘플에서 돌지 않음');
+    const again = S.state.items.filter(i => i.type === 'work');
+    ok(again.length === works.length + 1 && new Set(again.map(w => w.id)).size === again.length, `같은 작업이 두 번 생기지 않음 (${works.length} → ${again.length})`);
+    ok(S.roomDecorGroups([{ type: 'work', keywords: [], themes: [], work: { source: 'figma', keywords: ['반찬', '나눔', '디자인'] }, title: 't' }]).every(g => g.decor.id !== 'donation'), "'반찬 나눔'은 기부함이 되지 않음");
+    ok(realCalls === 0, '다시 가져와도 네트워크 요청 없음');
   }
 
   // ---------- 결정 추출 품질 (SSRD LS-7: 80% 이상) ----------

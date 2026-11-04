@@ -137,6 +137,7 @@ js/views.js    타임라인, 결정, 리포트, 퀘스트, AI 대화 불러오�
 js/meeting.js  음성·화상 회의 (WebRTC + Firestore 신호), 받아쓰기, 회의 요약
 js/decor.js    회의 키워드 → 방 사물 (책상 위·바닥·벽에 2.5D로 그림)
 js/integrations.js  GitHub·Figma·Notion 연동 (브라우저에서 공식 API 호출, 본인 토큰)
+js/sampleapi.js  샘플 체험용 가상 GitHub·Figma·Notion API 응답 (실제 가져오기 코드로 읽음)
 js/extension.js  Chrome 확장이 보낸 AI 대화·검색 기록 받기 → 담기 창
 js/meetimport.js  Google Meet 녹취록 가져오기 (Drive Picker 또는 파일)
 js/ai.js       프록시 호출 (AI 정리·그림 인식·TURN), 실패하면 규칙 기반
