@@ -163,7 +163,7 @@ async function cloudJoin(teamId, code, role) {
 function logDenied(teamId, what) {
   db.collection('teams').doc(teamId).collection('accessLogs')
     .add({ uid: authUser.uid, email: authUser.email, what, at: Date.now() })
-    .catch(() => { /* 기록 실패는 무시 */ });
+    .catch(e => console.warn('접근 기록을 남기지 못했어요', e)); // 기록 실패가 사용자를 막지는 않는다
 }
 
 // ---------- 팀 열기 / 닫기 ----------
@@ -198,6 +198,7 @@ function cloudOpenTeam(teamId) {
   cloud.roleDoc = null;
   cloud.claimChecked = false;
   cloud.settingMember = false;
+  cloud.closing = false;
 
   const t = teamRef(teamId);
   t.collection('members').doc(authUser.uid).get()
@@ -261,7 +262,12 @@ function startPresence(teamId) {
     ref.doc(authUser.uid).set({ uid: authUser.uid, memberId: state.meId, at: Date.now() }).catch(() => { /* 예전 규칙이면 조용히 건너뜀 */ });
   };
   presenceBeat = beat;
-  setTimeout(beat, 1500); // 팀원 연결(meId)이 정해진 뒤
+  // 첫 표시는 팀원 연결(meId)이 정해지는 대로 (방금 참여했거나 느린 기기면 2분을 기다리지 않게)
+  const first = () => {
+    if (cloud.teamId !== teamId) return;
+    if (state?.meId) beat(); else setTimeout(first, 1500);
+  };
+  setTimeout(first, 1500);
   presenceTimer = setInterval(beat, PRESENCE_EVERY_MS);
   presenceExpiryTimer = setInterval(() => rebuildState(), 60 * 1000); // 오래된 접속 정리 (읽기 없음)
   cloud.unsubs.push(ref.onSnapshot(snap => {
@@ -366,7 +372,7 @@ function metaDoc(item) {
 }
 
 function cloudPush() {
-  if (!cloudOn() || !cloud.loaded || !authUser) return;
+  if (!cloudOn() || !cloud.loaded || !authUser || cloud.closing) return;
   const t = teamRef();
   const me = authUser.uid;
   const FV = firebase.firestore.FieldValue;
@@ -504,6 +510,17 @@ async function cloudCreateTeamFrom(src) {
   render();
 }
 
+// 나가기·방 삭제 전에 이 브라우저의 쓰기를 모두 멈춘다.
+// 내 발언 요약·연동 가져오기·회의 정리가 지우는 도중에 돌면 방금 지운 뒤에 기록이 새로 생긴다.
+async function quiesceCloud() {
+  cloud.closing = true;
+  if (typeof call !== 'undefined' && call.id) await leaveCall(); // 아직 팀원일 때 회의에서 나간다
+  cloud.unsubs.forEach(u => u());
+  cloud.unsubs = [];
+  stopPresence();
+  await db.waitForPendingWrites(); // 이미 보낸 쓰기까지 끝나야 지울 목록에 잡힌다
+}
+
 // 이 계정만 팀에서 나간다. 팀 데이터는 팀원들을 위해 남고, 초대 링크로 다시 들어올 수 있다.
 // 팀장은 먼저 넘기거나 방을 삭제해야 한다 (팀장 없는 방이 남지 않게).
 // eraseMine: 내 기록과 내 발언도 함께 지운다 (LS-5)
@@ -513,6 +530,7 @@ async function cloudLeaveTeam(eraseMine = false) {
   const mine = memberByUid(authUser.uid);
   const t = teamRef(id);
   try {
+    await quiesceCloud();
     if (eraseMine) await eraseMyRecords(t);
     if (mine) {
       delete mine.uid; delete mine.email; delete mine.photo;
@@ -528,6 +546,8 @@ async function cloudLeaveTeam(eraseMine = false) {
   } catch (e) {
     writeFailed(e);
   }
+  cloud.teamId = null; // 이미 팀원이 아니므로 접속 표시를 다시 쓰지 않게
+  cloud.loaded = false;
   cloudClose();
   state = null;
   cloud.showSetup = true;
@@ -691,31 +711,37 @@ async function cloudTransferOwner(uid) {
 async function cloudDeleteTeam() {
   const id = cloud.teamId;
   const t = teamRef(id);
+  let step = '시작'; // 실패하면 어느 단계인지 남긴다
   try {
+    await quiesceCloud();
     await t.update({ deleting: true });
-    cloud.unsubs.forEach(u => u());
-    cloud.unsubs = [];
-    stopPresence();
+    step = '회의';
     const calls = await t.collection('calls').get();
     for (const c of calls.docs) await eraseCallDocs(c.ref);
+    step = '기록';
     const meta = await t.collection('itemMeta').get();
     await deleteDocs(meta.docs.map(d => ({ ref: t.collection('items').doc(d.id) })));
     await deleteDocs(meta.docs);
     const mine = await t.collection('items').where('ownerUid', '==', authUser.uid).get(); // 목록에 없던 내 기록
     await deleteDocs(mine.docs);
     for (const name of ['decisions', 'quests', 'corrections', 'logs', 'accessLogs', 'presence', 'claims']) {
+      step = name;
       await deleteDocs((await t.collection(name).get()).docs);
     }
+    step = '초대 코드';
     await deleteDocs([{ ref: t.collection('secrets').doc('student') }, { ref: t.collection('secrets').doc('prof') }]);
+    step = '참여자';
     const roles = await t.collection('members').get();
     await deleteDocs(roles.docs.filter(d => d.id !== authUser.uid));
     await t.collection('members').doc(authUser.uid).delete();
+    step = '방 문서';
     await t.delete();
+    step = '내 방 목록';
     delete cloud.myTeams[id];
     await userRef().update({ [`teams.${id}`]: firebase.firestore.FieldValue.delete() });
     toast('방을 삭제했어요');
   } catch (e) {
-    writeFailed(e, '방 삭제');
+    writeFailed(e, `방 삭제(${step})`);
     toast('방을 다 지우지 못했어요. 다시 열어 👥 방 관리에서 이어서 삭제할 수 있어요');
   }
   cloud.teamId = null;

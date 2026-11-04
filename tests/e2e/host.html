@@ -21,7 +21,7 @@ const ok = (c, m) => {
   say(`${c ? 'PASS' : 'FAIL'} ${m}`);
   if (c) return;
   // 실패하면 그 순간 각 앱의 오류를 함께 보여 준다
-  Object.entries(frames).forEach(([u, f]) => { const errs = f.contentWindow?.__errors || []; if (errs.length) say(`     [${u}] ${errs.slice(-4).join(' | ').slice(0, 600)}`); });
+  Object.entries(frames).forEach(([u, f]) => { const errs = f.contentWindow?.__errors || []; const warns = f.contentWindow?.__warns || []; if (errs.length || warns.length) say(`     [${u}] ${errs.slice(-4).join(' | ').replace(/\s+/g, ' ').slice(0, 900)} // 경고: ${warns.slice(-3).join(' | ').replace(/\s+/g, ' ').slice(0, 400)}`); });
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn, ms = 10000) {
@@ -56,7 +56,9 @@ const encode = v => {
 };
 const getDoc = async p => {
   const r = await fetch(`${EMU}/${p}`, { headers: admin });
-  return r.ok ? decodeFields((await r.json()).fields || {}) : null;
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`관리자 읽기 실패 ${r.status} ${p}`); // 일시 오류를 '문서 없음'으로 읽지 않는다
+  return decodeFields((await r.json()).fields || {});
 };
 const setDoc = (p, d) => fetch(`${EMU}/${p}`, { method: 'PATCH', headers: admin, body: JSON.stringify({ fields: Object.fromEntries(Object.entries(d).map(([k, v]) => [k, encode(v)])) }) });
 const delDoc = p => fetch(`${EMU}/${p}`, { method: 'DELETE', headers: admin });
@@ -92,7 +94,7 @@ function closeAll() { Object.keys(frames).forEach(closeFrame); }
 // 규칙에 막힌 쓰기가 있었는지 (앱이 console.error로 남긴 것)
 function noDenied(w, who, allowed = []) {
   const bad = w.__errors.filter(e => /permission|PERMISSION|exception|rejection/.test(e) && !allowed.some(a => e.includes(a)));
-  ok(!bad.length, `${who}: 앱 오류·규칙 거절 없음${bad.length ? ` → ${bad.slice(0, 3).join(' | ')}` : ''}`);
+  ok(!bad.length, `${who}: 앱 오류·규칙 거절 없음${bad.length ? ` → ${bad.slice(0, 3).join(' | ').replace(/\s+/g, ' ')}` : ''}`);
   w.__errors.length = 0;
 }
 const toastText = w => w.document.getElementById('toasts')?.textContent || '';
@@ -219,8 +221,8 @@ async function scenarioRoom() {
     await sleep(120);
   }
   A.eval(`openMenu()`); await sleep(100); A.eval(`closeModal()`);
-  await until(() => A.eval('state.online && state.online.has(state.meId)'), 4000);
-  ok(A.eval(`state.online.has('${mB}')`), '접속 중 표시 (RQ-8)');
+  await until(() => A.eval(`state.online && state.online.has(state.meId) && state.online.has('${mB}') && state.online.has('${mC}')`));
+  ok(A.eval(`state.online.has('${mB}') && state.online.has('${mC}')`), '접속 중 표시: 방금 참여한 팀원도 2분을 기다리지 않음 (RQ-8)');
   noDenied(A, 'A'); noDenied(B, 'B'); noDenied(C, 'C'); noDenied(P, '교수자');
   return { A, B, C, P, X, T, mA, mB, mC };
 }
@@ -378,12 +380,16 @@ async function scenarioManage({ A, B, C, P, X, T, mB, mC }) {
   const prof = await B.eval(`teamRef().collection('secrets').doc('prof').get().then(s => Boolean(s.data().code))`);
   ok(prof, '새 팀장이 교수자 링크를 읽음');
 
-  // 내 기록까지 지우고 나가기 (LS-5)
+  // 내 기록까지 지우고 나가기 (LS-5). 지우는 도중 '내가 한 말' 자동 생성이 돌아도 되살아나지 않아야 한다
   const before = (await list(`teams/${T}/items`)).filter(i => i.ownerUid === 'uA').length;
+  A.localStorage.removeItem('brainroom:talks-done');
+  A.eval('scheduleTalkSync()');
   await A.eval(`cloudLeaveTeam(true)`);
   await until(() => A.eval('cloud.teamId === null'));
   const after = await list(`teams/${T}/items`);
   ok(before > 0 && !after.some(i => i.ownerUid === 'uA'), `내 기록 ${before}개를 지우고 나감`);
+  await sleep(3000); // 예약돼 있던 자동 생성 시각이 지나도
+  ok(!(await list(`teams/${T}/items`)).some(i => i.ownerUid === 'uA'), '나간 뒤에 내 기록이 되살아나지 않음');
   ok(!(await list(`teams/${T}/itemMeta`)).some(i => i.ownerUid === 'uA'), '횟수 기록도 함께 지움');
   ok(!(await getDoc(`teams/${T}/members/uA`)) && !(await getDoc('users/uA'))?.teams?.[T], '역할·방 목록 정리');
   noDenied(A, 'A');
@@ -543,7 +549,31 @@ window.scenarioAi = async () => {
   noDenied(W2, 'A'); noDenied(B, 'B');
 };
 
+// 간헐 오류 재현용: 접근 기록 + 방 삭제를 반복한다 (npm run e2e -- stress 처럼 따로 돌린다)
+async function scenarioStress(rounds = 12) {
+  say('=== 반복 시험: 접근 기록·방 삭제');
+  closeAll();
+  await wipe();
+  const A = await open('uA'), X = await open('uX');
+  for (let i = 0; i < rounds; i++) {
+    const T = await makeRoom(A, `반복 ${i}`);
+    await X.eval(`cloudJoin('${T}', 'wrong-code', 'student')`);
+    const logged = await until(async () => (await list(`teams/${T}/accessLogs`)).some(l => l.uid === 'uX' && l.email === 'x@x.com'), 8000);
+    ok(logged, `#${i} 막힌 접근 기록${logged ? '' : ` → warns: ${X.__warns.join(' | ')} errors: ${X.__errors.join(' | ')}`}`);
+    X.__errors.length = 0; X.__warns.length = 0;
+    A.eval(`addItem({ memberId: state.meId, type: 'memo', title: '기록 ${i}', content: '내용', visibility: 'team' })`);
+    if (i % 2) await until(async () => (await list(`teams/${T}/items`)).length === 1); // 절반은 저장이 끝나기 전에 바로 지운다
+    await A.eval('cloudDeleteTeam()');
+    const gone = await until(async () => !(await getDoc(`teams/${T}`)), 8000);
+    const bad = A.__errors.filter(e => /permission/i.test(e));
+    ok(gone && !bad.length, `#${i} 방 삭제${bad.length ? ` → ${bad.join(' | ')}` : ''}${gone ? '' : ' (안 지워짐)'}`);
+    A.__errors.length = 0;
+    await sleep(100);
+  }
+}
+
 async function run() {
+  if (ONLY === 'stress') { await scenarioStress(); closeAll(); return; }
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
     await scenarioCalls(ctx);

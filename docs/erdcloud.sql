@@ -20,6 +20,8 @@ CREATE TABLE teams (
   course              VARCHAR(40)  NULL     COMMENT '수업명',
   owner_uid           VARCHAR(128) NOT NULL COMMENT '방을 만든 사람',
   decision_dismissed  JSON         NULL     COMMENT '무시한 결정 후보 키 목록',
+  links               JSON         NULL     COMMENT '방 공용 연동 대상 { github, figma[], notion[] }',
+  deleting            BOOLEAN      NULL     COMMENT '방 삭제 진행 중 (이 표시가 있어야 팀장이 남의 기록을 지울 수 있음)',
   created_at          BIGINT       NOT NULL COMMENT '만든 시각',
   PRIMARY KEY (team_id),
   FOREIGN KEY (owner_uid) REFERENCES users (uid)
@@ -58,12 +60,37 @@ CREATE TABLE team_roles (
   role        VARCHAR(10)  NOT NULL COMMENT 'student | prof',
   member_id   VARCHAR(32)  NULL     COMMENT '명단에서 고른 팀원 (교수자는 없음)',
   code        VARCHAR(40)  NULL     COMMENT '참여할 때 쓴 초대 코드',
+  name        VARCHAR(100) NULL     COMMENT '방 관리 화면에 보일 이름',
+  email       VARCHAR(200) NULL     COMMENT '방 관리 화면에 보일 이메일 (로그인 토큰과 같아야 함)',
   joined_at   BIGINT       NOT NULL COMMENT '참여 시각',
   PRIMARY KEY (team_id, uid),
   FOREIGN KEY (team_id) REFERENCES teams (team_id),
   FOREIGN KEY (uid) REFERENCES users (uid),
   FOREIGN KEY (member_id) REFERENCES team_members (member_id)
 ) COMMENT = '방 역할·권한 (teams/{t}/members/{uid}) — 보안 규칙이 이 표로 권한을 판단';
+
+-- teams/{teamId}/claims/{memberId}
+CREATE TABLE member_claims (
+  team_id     VARCHAR(64)  NOT NULL COMMENT '방',
+  member_id   VARCHAR(32)  NOT NULL COMMENT '명단의 팀원 칸',
+  uid         VARCHAR(128) NOT NULL COMMENT '이 칸을 쓰는 계정 (먼저 만든 계정만)',
+  at          BIGINT       NOT NULL COMMENT '선점 시각',
+  PRIMARY KEY (team_id, member_id),
+  FOREIGN KEY (team_id) REFERENCES teams (team_id),
+  FOREIGN KEY (member_id) REFERENCES team_members (member_id),
+  FOREIGN KEY (uid) REFERENCES users (uid)
+) COMMENT = '팀원 칸 선점 (teams/{t}/claims/{memberId}) — 한 칸은 계정 하나만';
+
+-- teams/{teamId}/presence/{uid}
+CREATE TABLE presence (
+  team_id     VARCHAR(64)  NOT NULL COMMENT '방',
+  uid         VARCHAR(128) NOT NULL COMMENT '계정',
+  member_id   VARCHAR(32)  NULL     COMMENT '자기 팀원 칸만 가능',
+  at          BIGINT       NOT NULL COMMENT '마지막 갱신 (5분 안이면 접속 중, 나가면 0)',
+  PRIMARY KEY (team_id, uid),
+  FOREIGN KEY (team_id) REFERENCES teams (team_id),
+  FOREIGN KEY (uid) REFERENCES users (uid)
+) COMMENT = '실시간 접속 표시 (teams/{t}/presence/{uid})';
 
 -- teams/{teamId}/secrets/{kind}
 CREATE TABLE team_secrets (
@@ -80,8 +107,8 @@ CREATE TABLE items (
   team_id         VARCHAR(64)  NOT NULL COMMENT '방',
   member_id       VARCHAR(32)  NOT NULL COMMENT '누구의 기록인지 (팀원)',
   owner_uid       VARCHAR(128) NOT NULL COMMENT '관리하는 계정 (수정·삭제 권한)',
-  type            VARCHAR(10)  NOT NULL COMMENT 'link | memo | idea | ai',
-  title           VARCHAR(80)  NOT NULL COMMENT '제목 (개인정보 가림 후)',
+  type            VARCHAR(10)  NOT NULL COMMENT 'link | memo | idea | ai | talk(회의 발언) | work(연동 작업) | search(검색)',
+  title           VARCHAR(1000) NOT NULL COMMENT '제목 (개인정보 가림 후, 규칙 상한 1000자)',
   content         TEXT         NULL     COMMENT '내용·요약 (개인정보 가림 후)',
   url             VARCHAR(500) NULL     COMMENT '원본 링크',
   visibility      VARCHAR(5)   NOT NULL COMMENT '공유 범위 me(나만) | team | prof(교수자까지)',
@@ -93,6 +120,17 @@ CREATE TABLE items (
   ai_purpose      VARCHAR(10)  NULL     COMMENT 'AI 대화: research | draft | code | translate | idea | etc',
   ai_transcript   TEXT         NULL     COMMENT 'AI 대화 원문 (최대 6000자, 개인정보 가림)',
   ai_source_id    VARCHAR(200) NULL     COMMENT 'AI 대화 원본 id (중복 방지)',
+  ai_summary_by   VARCHAR(5)   NULL     COMMENT 'AI 대화: 요약 주체 (ai면 프록시가 정리)',
+  ai_decisions    JSON         NULL     COMMENT 'AI 대화: AI가 뽑은 정한 것 (결정 후보)',
+  talk_call_id    VARCHAR(32)  NULL     COMMENT '회의 발언: 어느 회의에서 (calls.call_id)',
+  talk_line_count INT          NULL     COMMENT '회의 발언: 발언 수',
+  talk_keywords   JSON         NULL     COMMENT '회의 발언: 키워드 (방 물품이 된다)',
+  talk_transcript TEXT         NULL     COMMENT '회의 발언: 내가 한 말 원문 (최대 6000자)',
+  talk_decisions  JSON         NULL     COMMENT '회의 발언: AI가 뽑은 정한 것',
+  work_source     VARCHAR(10)  NULL     COMMENT '연동 작업: github | figma | notion',
+  work_kind       VARCHAR(10)  NULL     COMMENT '연동 작업: commit | pr | version | comment | edit',
+  work_keywords   JSON         NULL     COMMENT '연동 작업: 핵심 키워드 (방 물품이 된다)',
+  work_ai         BOOLEAN      NULL     COMMENT '연동 작업: AI 공동 작성 커밋',
   correction_id   VARCHAR(32)  NULL     COMMENT '기여 보정으로 추가된 기록이면 그 요청 (corrections.correction_id)',
   imported        BOOLEAN      NULL     COMMENT '방장이 기존 데이터에서 가져온 기록',
   created_at      BIGINT       NOT NULL COMMENT '기록 시각',
@@ -215,13 +253,19 @@ CREATE TABLE access_logs (
 CREATE TABLE calls (
   call_id           VARCHAR(32)  NOT NULL COMMENT '회의 id',
   team_id           VARCHAR(64)  NOT NULL COMMENT '방',
-  title             VARCHAR(40)  NOT NULL COMMENT '회의 제목',
-  status            VARCHAR(5)   NOT NULL COMMENT 'live | ended',
+  title             VARCHAR(200) NOT NULL COMMENT '회의 제목',
+  status            VARCHAR(5)   NOT NULL COMMENT 'live | ended (끝난 회의는 다시 열 수 없음)',
   started_by        VARCHAR(128) NOT NULL COMMENT '시작한 계정',
   started_by_name   VARCHAR(20)  NULL     COMMENT '시작한 사람 이름',
   started_at        BIGINT       NOT NULL COMMENT '시작 시각',
   ended_at          BIGINT       NULL     COMMENT '끝난 시각',
-  summary           TEXT         NULL     COMMENT '규칙 기반 요약',
+  summary           TEXT         NULL     COMMENT '요약 (규칙 기반 또는 AI). 비어 있으면 요약 중',
+  summary_by        VARCHAR(5)   NULL     COMMENT 'rule | ai',
+  decisions         JSON         NULL     COMMENT '회의에서 정한 것 (결정 후보)',
+  closed_by         VARCHAR(128) NULL     COMMENT '회의를 끝낸 계정 (요약은 이 사람이 한 번만)',
+  share_prof        BOOLEAN      NULL     COMMENT '교수자에게 요약 공유',
+  source            VARCHAR(10)  NULL     COMMENT 'meet면 Google Meet 녹취에서 가져옴',
+  imported          BOOLEAN      NULL     COMMENT '가져온 녹취 (화자는 lines.member_id로 찾음)',
   attendees         JSON         NULL     COMMENT '참석자 이름 목록',
   line_count        INT          NULL     COMMENT '녹취 줄 수',
   PRIMARY KEY (call_id),

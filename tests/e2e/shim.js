@@ -13,6 +13,12 @@
     window.__errors.push(a.map(x => (x && x.code ? `${x.code}: ${x.message}` : String(x))).join(' '));
     origError(...a);
   };
+  window.__warns = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => {
+    window.__warns.push(a.map(x => (x && x.code ? `${x.code}: ${x.message}` : String(x))).join(' '));
+    origWarn(...a);
+  };
   window.addEventListener('error', e => window.__errors.push(`exception: ${e.message}`));
   window.addEventListener('unhandledrejection', e => window.__errors.push(`rejection: ${e.reason?.code || ''} ${e.reason?.message || e.reason}`));
 

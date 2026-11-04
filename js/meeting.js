@@ -166,7 +166,7 @@ function scheduleCallSweep() {
 }
 
 async function sweepCalls() {
-  if (!cloudOn() || !Array.isArray(state?.calls)) return;
+  if (!cloudOn() || cloud.closing || !Array.isArray(state?.calls)) return;
   const now = Date.now();
   const col = callsRef();
   for (const c of state.calls) {
@@ -407,7 +407,7 @@ function talksDone() {
 }
 
 async function syncMyTalks() {
-  if (talkRunning || !cloudOn() || !cloud.loaded || !state?.meId || !Array.isArray(state.calls)) return;
+  if (talkRunning || !cloudOn() || !cloud.loaded || cloud.closing || !state?.meId || !Array.isArray(state.calls)) return;
   talkRunning = true;
   const teamId = cloud.teamId;
   const done = talksDone();
@@ -425,12 +425,13 @@ async function syncMyTalks() {
       console.error(e);
       continue;
     }
-    if (cloud.teamId !== teamId) break;
+    if (cloud.teamId !== teamId || cloud.closing) break;
     // 발언이 아직 안 보이면(녹취 줄이 저장되는 중일 수 있음) 기억하지 않고 다음에 다시 본다
     if (!lines.length || state.items.some(i => i.id === id)) continue;
     done.add(id);
     const transcript = lines.map(l => l.text).join('\n');
     const ai = await aiSummarize('talk', transcript); // 프록시가 있으면 AI가 내 발언을 정리
+    if (cloud.teamId !== teamId || cloud.closing) break; // 요약을 기다리는 동안 방을 나갔다
     const keywords = ai?.keywords.length ? ai.keywords : spokenKeywords(lines, 10); // 내가 한 말의 키워드 (방 물품이 된다)
     const content = ai
       ? formatAiSummary(ai, [`「${c.title}」 회의 (${fmtDate(c.startedAt)}) · 발언 ${lines.length}번`])
