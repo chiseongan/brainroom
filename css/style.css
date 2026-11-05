@@ -183,6 +183,41 @@ main { max-width: 1320px; margin: 0 auto; padding: 24px; }
 @media (max-width: 640px) { .steps { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .hero-dot { animation: none; } }
 
+/* ---------- 코크핏 (워크스페이스 피드) ---------- */
+.cockpit { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start; }
+.feed-head { margin-bottom: 14px; }
+.feed-head h1 { font-size: 26px; margin: 2px 0; }
+.feed-count { font-size: 13px; }
+.feed-search { margin-bottom: 10px; }
+.feed-filters { margin-bottom: 16px; }
+.fchip { cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.fchip.on { background: var(--primary-deep); border-color: var(--primary); color: var(--ink); font-weight: 700; }
+.feed-list { display: grid; gap: 10px; }
+.feed-card {
+  display: grid; grid-template-columns: 40px 1fr; gap: 12px; align-items: start;
+  border: 1px solid var(--line); border-left: 3px solid var(--mc); border-radius: 14px;
+  padding: 12px 14px; background: var(--surface); color: var(--ink); cursor: pointer;
+  transition: border-color .15s, transform .1s, background .15s;
+}
+.feed-card:hover { background: var(--surface-2); }
+.feed-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.fc-icon { font-size: 22px; line-height: 1.2; }
+.fc-head { display: flex; gap: 8px; align-items: baseline; }
+.fc-title { flex: 1; font-size: 15px; }
+.fc-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.fc-who { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
+.fc-prev { color: var(--ink); opacity: .85; font-size: 13px; margin: 6px 0 0; }
+.fc-tags { margin-top: 8px; align-items: center; }
+.fc-conn { background: var(--primary-deep); }
+.fc-link { color: var(--primary); text-decoration: none; font-size: 12px; }
+.feed-empty { padding: 24px 0; text-align: center; }
+.panel-body { white-space: pre-wrap; color: var(--ink); margin: 10px 0; }
+.panel-link { margin: 8px 0; }
+.panel-tags { margin: 10px 0; }
+.conn-list { list-style: none; padding: 0; margin: 6px 0; display: grid; gap: 6px; }
+.conn-list li { font-size: 13px; }
+@media (max-width: 860px) { .cockpit { grid-template-columns: 1fr; } .rail { order: -1; } }
+
 /* ---------- 2.5D 씬 공통 ---------- */
 .iso { display: block; width: 100%; height: 100%; }
 .iso text { user-select: none; }
@@ -374,7 +409,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 24px; }
 }
 .panel.open { transform: none; }
 .panel header { display: flex; justify-content: space-between; align-items: center; }
-.panel h3 { font-size: 18px; margin: 0; }
+.panel h2, .panel h3 { font-size: 18px; margin: 0; }
 .panel .item-list { margin-top: 14px; }
 
 /* ---------- 회의실 ---------- */

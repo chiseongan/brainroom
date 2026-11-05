@@ -1056,13 +1056,35 @@ async function scenarioLanding() {
   closeFrame('uA');
 }
 
+// 코크핏: 데모 샘플 + 작업 기록을 한 피드로, 검색·소스필터·상세 패널
+async function scenarioCockpit() {
+  say('\n=== 코크핏 피드');
+  closeAll();
+  const A = await open('uA');
+  await A.eval('(async () => { guestMode = true; state = sampleWorkspace(); await loadSampleApi(); renderWorkspace(); })()');
+  const n0 = await A.eval('document.querySelectorAll(".feed-card").length');
+  ok(n0 >= 1, `피드 카드 렌더 (${n0})`);
+  await A.eval('{ const s = document.querySelector(".feed-search input"); s.value = "다회용기"; s.dispatchEvent(new Event("input", { bubbles: true })); }');
+  const n1 = await A.eval('document.querySelectorAll(".feed-card").length');
+  ok(n1 >= 1 && n1 < n0, `검색어 입력 시 목록 축소 (${n0}→${n1})`);
+  await A.eval('{ const s = document.querySelector(".feed-search input"); s.value = ""; s.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector(".feed-filters [data-src=\\"github\\"]").click(); }');
+  const gh = await A.eval('[...document.querySelectorAll(".feed-card")].length');
+  ok(gh >= 1, `소스 필터칩(github) 동작 (${gh})`);
+  await A.eval('document.querySelector(".feed-card").click();');
+  ok(await A.eval('document.getElementById("panel").classList.contains("open")'), '카드 클릭 시 상세 패널 열림');
+  await A.eval('document.querySelector("#panel [data-close-panel]").click();');
+  await axeCheck(A, '코크핏 피드');
+  closeFrame('uA');
+}
+
 async function run() {
   if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
   if (ONLY === 'consent') { await scenarioConsent(); await scenarioDelete(); closeAll(); return; }
   if (ONLY === 'stress') { await scenarioStress(); closeAll(); return; }
   if (ONLY === 'design') { await scenarioDesign(); closeAll(); return; }
   if (ONLY === 'landing') { await scenarioLanding(); closeAll(); return; }
-  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); }
+  if (ONLY === 'cockpit') { await scenarioCockpit(); closeAll(); return; }
+  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); await scenarioCockpit(); }
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
     await scenarioCalls(ctx);

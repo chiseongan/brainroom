@@ -16,14 +16,14 @@ function makeApp(fakeFetch, names = ['안치성', '김단유', '박채연']) {
     document: { querySelector: () => null, addEventListener() {} }, window: {}, navigator: {},
   };
   vm.createContext(ctx);
-  vm.runInContext(['themes', 'nlp', 'sanitize', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport', 'sampleapi'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
+  vm.runInContext(['themes', 'nlp', 'sanitize', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport', 'sampleapi', 'workspace'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
     + `\n;var guestMode = false, authUser = null, cloud = { loaded: true };
-    function render() {} function toast() {} function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } function fmtDate() { return ''; } function trunc(s) { return s; }
+    function render() {} function toast() {} function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } function fmtDate() { return ''; } function trunc(s) { return s; } function timeAgo() { return ''; }
     async function aiFeature() { return false; }
     function hashCode(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return Math.abs(h); }
     state = newWorkspace('t', ${JSON.stringify(names)}); state.meId = state.members[0].id;
     globalThis.T = { get state() { return state; }, parseTranscript, guessMember, figmaTextFromDocument, coreKeywords, upsertWork, deleteItem, roomDecorGroups,
-      syncGithub, syncFigma, syncNotion, decorFor, workKeywords, itemDecorIds, detectThemes, extractKeywords, addItem, decisionCandidates, DECISION_PATTERN, maskPII, weeklySummary, weekStart, sanitizeForProf, decorMatch, DECOR, DECOR_BY_ID, DESK_Z };`, ctx);
+      syncGithub, syncFigma, syncNotion, decorFor, workKeywords, itemDecorIds, detectThemes, extractKeywords, addItem, decisionCandidates, DECISION_PATTERN, maskPII, weeklySummary, weekStart, sanitizeForProf, decorMatch, DECOR, DECOR_BY_ID, DESK_Z, feedFilter, feedCardHTML };`, ctx);
   vm.runInContext(fs.readFileSync(path.join(root, 'js', 'room.js'), 'utf8').replace(/function hashCode[\s\S]*?\n}\n/, '') + `\n;globalThis.T.R = { decorPlacement, roomHTML, FLOOR_SLOTS, DESK_SLOTS };`, ctx);
   ctx.T.ctx = ctx;
   return ctx.T;
@@ -329,6 +329,26 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
     run(`PROXY_URL = 'https://pxy.example'; guestMode = true;`);
     try { await run(`apiGet('github', 'https://api.github.com/repos/o/r/commits', 'ghp_z')`); } catch (e) { /* sampleFetch 미지원 URL 무시 */ }
     ok(calls.length === 0, '데모 모드는 네트워크 호출 없음 (sampleFetch 경유)');
+  }
+
+  console.log('--- 코크핏 피드 필터·카드');
+  {
+    const F = makeApp(null, ['지민', '서준', '하은']);
+    const run = code => vm.runInContext(code, F.ctx);
+    const me = F.state.meId, other = F.state.members[1].id;
+    run(`state.items = [
+      { id: 'i1', memberId: ${JSON.stringify(me)}, type: 'work', title: '다회용기 커밋', content: '', url: 'https://x/1', createdAt: 100, keywords: ['다회용기'], themes: [], visibility: 'team', work: { source: 'github' } },
+      { id: 'i2', memberId: ${JSON.stringify(me)}, type: 'work', title: '피그마 시안', content: '', url: '', createdAt: 90, keywords: ['디자인'], themes: [], visibility: 'team', work: { source: 'figma' } },
+      { id: 'i3', memberId: ${JSON.stringify(other)}, type: 'memo', title: '비공개 메모', content: '다회용기 생각', url: '', createdAt: 80, keywords: [], themes: [], visibility: 'me' },
+    ];`);
+    const byQ = run("feedFilter(state.items, { q: '다회용기' }).map(i => i.id)");
+    ok(byQ.includes('i1'), `검색어가 제목/키워드 매칭 (${byQ})`);
+    const bySrc = run("feedFilter(state.items, { source: 'github' }).map(i => i.id)");
+    ok(bySrc.length === 1 && bySrc[0] === 'i1', `소스 필터: github work만 (${bySrc})`);
+    const vis = run('feedFilter(state.items, {}).map(i => i.id)');
+    ok(!vis.includes('i3'), '다른 팀원의 visibility:me 아이템 제외 (canSee)');
+    const card = run(`feedCardHTML({ id: 'x', memberId: ${JSON.stringify(me)}, type: 'memo', title: '<script>bad</script>', keywords: [], createdAt: 0 })`);
+    ok(card.includes('&lt;script&gt;') && !card.includes('<script>bad'), '카드 제목 이스케이프(저장형 XSS 방어)');
   }
 
   // ---------- 결정 추출 품질 (SSRD LS-7: 80% 이상) ----------
