@@ -643,6 +643,9 @@ details > summary { cursor: pointer; }
 .invite-note { margin: 2px 0 8px; }
 
 /* 접근성 */
+/* 마우스로 누를 때는 테두리를 그리지 않는다. 키보드로 이동할 때만 표시한다 */
+:focus:not(:focus-visible) { outline: none; }
+.iso [tabindex] { -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 3px solid #1d4ed8; outline-offset: 2px; }
 .iso [tabindex]:focus-visible { outline: none; filter: brightness(1.12) drop-shadow(0 0 4px #1d4ed8) drop-shadow(0 0 2px #1d4ed8); }
 main:focus { outline: none; }
