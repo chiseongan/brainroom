@@ -268,6 +268,38 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
     ok(realCalls === 0, '다시 가져와도 네트워크 요청 없음');
   }
 
+  console.log('--- 데이터 모델: 마일스톤·산출물·기여도');
+  {
+    const D = makeApp(null, ['지민', '서준', '하은']);
+    const run = code => vm.runInContext(code, D.ctx);
+    // ① 구버전 워크스페이스 마이그레이션(필드 없음 → [])
+    const mg = run('migrate({ version: 1, items: [], members: [] })');
+    ok(Array.isArray(mg.milestones) && mg.milestones.length === 0, 'migrate: milestones 기본 []');
+    ok(Array.isArray(mg.deliverables) && mg.deliverables.length === 0, 'migrate: deliverables 기본 []');
+    // ② 산출물 추가·수정·삭제
+    const d = run("addDeliverable({ title: 'SSRD', docType: 'SSRD', ownerId: state.meId })");
+    ok(D.state.deliverables.length === 1, '산출물 추가 → 목록 1개');
+    ok(d.status === 'draft', '산출물 기본 상태 draft');
+    run(`updateDeliverable(${JSON.stringify(d.id)}, { status: 'submitted' })`);
+    ok(D.state.deliverables[0].status === 'submitted', '산출물 상태 변경 반영');
+    const ms = run("addMilestone({ title: '공감 단계 마감', kind: 'phase' })");
+    run(`updateDeliverable(${JSON.stringify(d.id)}, { milestoneId: ${JSON.stringify(ms.id)} })`);
+    run(`removeMilestone(${JSON.stringify(ms.id)})`);
+    ok(D.state.milestones.length === 0 && D.state.deliverables[0].milestoneId === null, '마일스톤 삭제 시 산출물 연결 해제');
+    // ③ 기여도: 팀원 work 아이템을 소스별로 집계
+    run(`['github', 'github', 'figma'].forEach((s, n) => state.items.push({ id: uid(), memberId: state.meId, type: 'work', title: 'w' + n, content: '', url: '', createdAt: Date.now(), keywords: ['api'], themes: [], visibility: 'team', work: { source: s } }));
+      state.items.push({ id: uid(), memberId: state.meId, type: 'memo', title: 'm', content: '', url: '', createdAt: Date.now(), keywords: ['api'], themes: [], visibility: 'team' });`);
+    const c = run('contribution(state.meId)');
+    ok(c.counts.github === 2 && c.counts.figma === 1, `기여도: 소스별 work 집계 (${JSON.stringify(c.counts)})`);
+    ok(c.byType.work === 3 && c.byType.memo === 1, '기여도: 타입별 집계');
+    ok(c.topKeywords.includes('api') && c.last > 0, '기여도: 키워드·최근활동');
+    // ④ 샘플 워크스페이스에 마일스톤·산출물 시드
+    const SW = makeApp(null);
+    const sw = vm.runInContext('sampleWorkspace()', SW.ctx);
+    ok(sw.milestones.length >= 1, `샘플: 마일스톤 시드 (${sw.milestones.length})`);
+    ok(sw.deliverables.length >= 1, `샘플: 산출물 시드 (${sw.deliverables.length})`);
+  }
+
   console.log('--- 전송 계층: GitHub 프록시 라우팅');
   {
     const calls = [];

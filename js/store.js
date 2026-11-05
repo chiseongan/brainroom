@@ -36,7 +36,7 @@ function migrate(ws) {
   ws.course ??= '';
   ws.links ??= {}; // 방 공용 연동 대상 { github: '팀/저장소', figma: [파일 키], notion: [페이지 id] }
   ws.viewer ??= 'student';
-  for (const key of ['decisions', 'decisionDismissed', 'quests', 'corrections', 'changeLog', 'accessLog']) ws[key] ??= [];
+  for (const key of ['decisions', 'decisionDismissed', 'quests', 'corrections', 'changeLog', 'accessLog', 'milestones', 'deliverables']) ws[key] ??= [];
   ws.items.forEach(i => {
     i.visibility ??= 'team';
     i.votes ??= [];
@@ -158,6 +158,66 @@ function profile(memberId) {
   };
 }
 
+// ---------- 마일스톤 · 산출물 (프로젝트 코크핏) ----------
+// milestone: { id, title, phase, dueAt, status('todo'|'doing'|'done'), kind('phase'|'present'|'custom'), createdAt, createdBy }
+function addMilestone({ title, phase = '', dueAt = null, status = 'todo', kind = 'custom', createdBy = state.meId }) {
+  const m = { id: uid(), title, phase, dueAt, status, kind, createdAt: Date.now(), createdBy };
+  state.milestones.push(m);
+  saveState();
+  return m;
+}
+
+function updateMilestone(id, patch) {
+  const m = state.milestones.find(x => x.id === id);
+  if (m) { Object.assign(m, patch); saveState(); }
+  return m;
+}
+
+function removeMilestone(id) {
+  state.milestones = state.milestones.filter(x => x.id !== id);
+  state.deliverables.forEach(d => { if (d.milestoneId === id) d.milestoneId = null; }); // 연결 해제
+  saveState();
+}
+
+// deliverable: { id, title, docType('SSRD'|'SSAD'|'test'|'present'|'custom'), status('draft'|'review'|'submitted'), ownerId, url, dueAt, milestoneId, createdAt }
+function addDeliverable({ title, docType = 'custom', status = 'draft', ownerId = state.meId, url = '', dueAt = null, milestoneId = null }) {
+  const d = { id: uid(), title, docType, status, ownerId, url, dueAt, milestoneId, createdAt: Date.now() };
+  state.deliverables.push(d);
+  saveState();
+  return d;
+}
+
+function updateDeliverable(id, patch) {
+  const d = state.deliverables.find(x => x.id === id);
+  if (d) { Object.assign(d, patch); saveState(); }
+  return d;
+}
+
+function removeDeliverable(id) {
+  state.deliverables = state.deliverables.filter(x => x.id !== id);
+  saveState();
+}
+
+// 기여도: 저장하지 않고 아이템에서 파생. 소스별·타입별 건수, 이번 주 건수, 최근 활동, 상위 키워드.
+// 가시성(canSee)을 지켜, 지금 보는 사람이 볼 수 있는 아이템만 센다.
+function contribution(memberId) {
+  const items = itemsOf(memberId);
+  const counts = {};
+  const byType = {};
+  const kw = {};
+  const wk = typeof weekStart === 'function' ? weekStart(Date.now()) : 0;
+  let week = 0, last = 0;
+  items.forEach(i => {
+    byType[i.type] = (byType[i.type] || 0) + 1;
+    if (i.type === 'work' && i.work?.source) counts[i.work.source] = (counts[i.work.source] || 0) + 1;
+    (i.keywords || []).forEach(k => { kw[k] = (kw[k] || 0) + 1; });
+    if (i.createdAt >= wk) week++;
+    if (i.createdAt > last) last = i.createdAt;
+  });
+  const topKeywords = Object.entries(kw).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k]) => k);
+  return { counts, byType, week, last, topKeywords };
+}
+
 function tableItems() {
   return state.items.filter(i => i.table && canSee(i));
 }
@@ -241,6 +301,17 @@ function sampleWorkspace() {
     { id: uid(), week: weekStart(now), title: '팀원마다 자료 2개 이상 모으기', target: 'link', count: 8, done: false },
     { id: uid(), week: weekStart(now), title: '이번 주 결정 2개 확정하기', target: 'decision', count: 2, done: false },
     { id: uid(), week: weekStart(now), title: '인터뷰 일정 잡기', target: 'manual', count: 1, done: false },
+  );
+
+  const d = 24 * h;
+  ws.milestones.push(
+    { id: uid(), title: '공감하기 — 사용자 인터뷰', phase: '공감', dueAt: now - 1 * d, status: 'done', kind: 'phase', createdAt: now - 20 * d, createdBy: seojun },
+    { id: uid(), title: '정의하기 — 문제 정의서', phase: '정의', dueAt: now + 3 * d, status: 'doing', kind: 'phase', createdAt: now - 10 * d, createdBy: jimin },
+    { id: uid(), title: '1차 사이클 발표', phase: '', dueAt: now + 7 * d, status: 'todo', kind: 'present', createdAt: now - 5 * d, createdBy: jimin },
+  );
+  ws.deliverables.push(
+    { id: uid(), title: 'SSRD (소프트웨어 요구사항 정의서)', docType: 'SSRD', status: 'review', ownerId: haeun, url: 'https://docs.google.com/document/d/ssrd', dueAt: now + 3 * d, milestoneId: ws.milestones[1].id, createdAt: now - 8 * d },
+    { id: uid(), title: 'SSAD (소프트웨어 구조 설계서)', docType: 'SSAD', status: 'draft', ownerId: doyun, url: '', dueAt: now + 10 * d, milestoneId: null, createdAt: now - 2 * d },
   );
 
   ws.members[0].pinnedIdeaId = ecoIdea.id;
