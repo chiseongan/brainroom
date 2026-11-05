@@ -203,7 +203,8 @@ main { max-width: 1320px; margin: 0 auto; padding: 24px; }
 .feed-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .fc-icon { font-size: 22px; line-height: 1.2; }
 .fc-head { display: flex; gap: 8px; align-items: baseline; }
-.fc-title { flex: 1; font-size: 15px; }
+.fc-title { flex: 1; font: inherit; font-weight: 700; font-size: 15px; color: var(--ink); background: none; border: none; padding: 0; text-align: left; cursor: pointer; }
+.fc-title:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
 .fc-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .fc-who { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
 .fc-prev { color: var(--ink); opacity: .85; font-size: 13px; margin: 6px 0 0; }
@@ -217,6 +218,27 @@ main { max-width: 1320px; margin: 0 auto; padding: 24px; }
 .conn-list { list-style: none; padding: 0; margin: 6px 0; display: grid; gap: 6px; }
 .conn-list li { font-size: 13px; }
 @media (max-width: 860px) { .cockpit { grid-template-columns: 1fr; } .rail { order: -1; } }
+
+/* ---------- 코크핏 사이드레일 ---------- */
+.rail { display: grid; gap: 16px; position: sticky; top: 80px; }
+.rail-card { border: 1px solid var(--line); border-radius: 16px; padding: 16px; background: var(--surface); }
+.rail-card h2 { font-size: 16px; margin: 6px 0 10px; }
+.rail-card h3 { font-size: 13px; margin: 14px 0 6px; }
+.rail-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 9px; }
+.rail-row { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.rail-main { min-width: 0; }
+.rail-main b { font-size: 14px; }
+.rail-main a { color: var(--primary); text-decoration: none; }
+.rail-meta { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.dday { font-size: 12px; color: var(--muted); }
+.dday.over { color: var(--danger); }
+.ms-status, .dl-status { cursor: pointer; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink); }
+.ms-status.s-done, .dl-status.s-submitted { border-color: var(--ok); }
+.ms-status.s-doing, .dl-status.s-review { border-color: var(--primary); }
+.rail-add { display: flex; gap: 6px; margin-top: 10px; }
+.rail-add input { flex: 1; }
+.contrib-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.rail-proxy { text-align: center; }
 
 /* ---------- 2.5D 씬 공통 ---------- */
 .iso { display: block; width: 100%; height: 100%; }

@@ -1077,6 +1077,27 @@ async function scenarioCockpit() {
   closeFrame('uA');
 }
 
+// 코크핏 레일: 마일스톤·산출물(빠른추가·상태토글) + 팀원 기여도
+async function scenarioRail() {
+  say('\n=== 코크핏 레일: 마일스톤·산출물·기여도');
+  closeAll();
+  const A = await open('uA');
+  await A.eval('(async () => { guestMode = true; state = sampleWorkspace(); await loadSampleApi(); renderWorkspace(); })()');
+  ok(await A.eval('document.querySelectorAll(".rail [data-ms]").length >= 1'), '레일에 시드된 마일스톤 표시');
+  const d0 = await A.eval('document.querySelectorAll(".rail [data-dl]").length');
+  ok(d0 >= 1, `레일에 시드된 산출물 표시 (${d0})`);
+  await A.eval('document.querySelector(".rail [data-rail-add=\\"deliverable\\"]").click();');
+  const d1 = await A.eval('document.querySelectorAll(".rail [data-dl]").length');
+  ok(d1 === d0 + 1, `산출물 추가로 1개 증가 (${d0}→${d1})`);
+  const before = await A.eval('document.querySelector(".rail [data-dl-status]").textContent.trim()');
+  await A.eval('document.querySelector(".rail [data-dl-status]").click();');
+  const after = await A.eval('document.querySelector(".rail [data-dl-status]").textContent.trim()');
+  ok(before !== after, `산출물 상태 토글 반영 (${before}→${after})`);
+  ok(await A.eval('document.querySelectorAll(".rail .contrib .contrib-row").length >= 1 && /조각/.test(document.querySelector(".rail .contrib").textContent)'), '기여도 패널에 팀원별 수치');
+  await axeCheck(A, '코크핏 레일');
+  closeFrame('uA');
+}
+
 async function run() {
   if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
   if (ONLY === 'consent') { await scenarioConsent(); await scenarioDelete(); closeAll(); return; }
@@ -1084,7 +1105,8 @@ async function run() {
   if (ONLY === 'design') { await scenarioDesign(); closeAll(); return; }
   if (ONLY === 'landing') { await scenarioLanding(); closeAll(); return; }
   if (ONLY === 'cockpit') { await scenarioCockpit(); closeAll(); return; }
-  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); await scenarioCockpit(); }
+  if (ONLY === 'rail') { await scenarioRail(); closeAll(); return; }
+  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); await scenarioCockpit(); await scenarioRail(); }
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
     await scenarioCalls(ctx);

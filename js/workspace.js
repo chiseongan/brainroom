@@ -40,10 +40,10 @@ function feedCardHTML(item, conn = 0) {
   const link = item.url ? `<a class="fc-link" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" data-stop>원문 ↗</a>` : '';
   const badge = conn ? `<span class="chip fc-conn">🔗 연결 ${conn}</span>` : '';
   const prev = item.content ? `<p class="fc-prev">${esc(trunc(item.content, 140))}</p>` : '';
-  return `<div class="feed-card" data-item="${esc(item.id)}" tabindex="0" role="button" style="--mc:${esc((m && m.color) || '#8ea2ff')}">
+  return `<div class="feed-card" data-item="${esc(item.id)}" style="--mc:${esc((m && m.color) || '#8ea2ff')}">
     <div class="fc-icon" aria-hidden="true">${icon}</div>
     <div class="fc-main">
-      <div class="fc-head"><b class="fc-title">${esc(item.title)}</b><time class="fc-time">${typeof timeAgo === 'function' ? timeAgo(item.createdAt) : ''}</time></div>
+      <div class="fc-head"><button class="fc-title" data-open>${esc(item.title)}</button><time class="fc-time">${typeof timeAgo === 'function' ? timeAgo(item.createdAt) : ''}</time></div>
       <p class="fc-who"><i class="dot"></i>${esc((m && m.name) || '?')} · ${esc(src ? src.name : (meta.label || item.type))}</p>
       ${prev}
       <div class="chips fc-tags">${kw}${badge}${link}</div>
@@ -92,9 +92,8 @@ function renderWorkspace() {
 
 function wireCards(host) {
   host.querySelectorAll('.feed-card').forEach(c => {
-    const open = () => openItemPanel(c.dataset.item);
-    c.onclick = e => { if (!e.target.closest('[data-stop]')) open(); };
-    c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
+    // 카드 아무 곳이나 클릭하면 열리되, 원문 링크 클릭은 그대로 둔다. 접근성 경로는 제목 버튼(.fc-title).
+    c.onclick = e => { if (!e.target.closest('a')) openItemPanel(c.dataset.item); };
   });
 }
 
@@ -141,4 +140,87 @@ function openItemPanel(id) {
     ${(it.keywords && it.keywords.length) ? `<div class="chips panel-tags">${it.keywords.map(k => `<span class="chip">${esc(k)}</span>`).join('')}</div>` : ''}
     ${connected ? `<h3>🔗 연결된 조각</h3><ul class="conn-list">${connected}</ul>` : ''}`;
   panel.classList.add('open');
+}
+
+// ---------- 사이드레일: 마일스톤·산출물(CREATE) + 기여도·연결(CONNECT) ----------
+const MS_STATUS = { todo: '할 일', doing: '진행', done: '완료' };
+const DL_STATUS = { draft: '초안', review: '검토', submitted: '제출' };
+const nextStatus = (cur, order) => order[(order.indexOf(cur) + 1) % order.length];
+
+function dday(ts) {
+  if (!ts) return '';
+  const days = Math.ceil((ts - Date.now()) / 86400000);
+  return days === 0 ? 'D-day' : days > 0 ? `D-${days}` : `D+${-days}`;
+}
+
+function railHTML() {
+  const ms = (state.milestones || []).slice().sort((a, b) => (a.dueAt || 9e15) - (b.dueAt || 9e15));
+  const dl = state.deliverables || [];
+  const msHTML = ms.map(m => `
+    <li class="rail-row" data-ms="${esc(m.id)}">
+      <span class="rail-main"><b>${esc(m.title)}</b>${m.phase ? `<span class="muted sm"> · ${esc(m.phase)}</span>` : ''}</span>
+      <span class="rail-meta">${m.dueAt ? `<span class="dday ${m.dueAt < Date.now() && m.status !== 'done' ? 'over' : ''}">${dday(m.dueAt)}</span>` : ''}<button class="chip ms-status s-${esc(m.status)}" data-ms-status="${esc(m.id)}">${MS_STATUS[m.status] || esc(m.status)}</button></span>
+    </li>`).join('') || '<li class="muted sm">아직 마일스톤이 없어요.</li>';
+  const dlHTML = dl.map(d => {
+    const o = member(d.ownerId);
+    return `<li class="rail-row" data-dl="${esc(d.id)}">
+      <span class="rail-main"><b>${esc(d.title)}</b>
+        <span class="muted sm"><i class="dot" style="--mc:${esc((o && o.color) || '#8ea2ff')}"></i>${esc((o && o.name) || '담당 미정')}${d.url ? ` · <a href="${esc(d.url)}" target="_blank" rel="noopener noreferrer">문서 ↗</a>` : ''}</span></span>
+      <button class="chip dl-status s-${esc(d.status)}" data-dl-status="${esc(d.id)}">${DL_STATUS[d.status] || esc(d.status)}</button>
+    </li>`;
+  }).join('') || '<li class="muted sm">아직 산출물이 없어요.</li>';
+
+  const contrib = state.members.map(m => {
+    const c = contribution(m.id);
+    const total = Object.values(c.byType).reduce((a, b) => a + b, 0);
+    return `<li class="contrib-row"><span class="rail-main"><i class="dot" style="--mc:${esc(m.color)}"></i>${esc(m.name)}</span><span class="muted sm">조각 ${total} · 이번주 ${c.week}</span></li>`;
+  }).join('');
+
+  const links = typeof crossMemberLinks === 'function' ? crossMemberLinks(visibleItems()).slice(0, 4) : [];
+  const insight = links.map(p => {
+    const am = member(p.a.memberId), bm = member(p.b.memberId);
+    const sh = (p.a.keywords || []).filter(k => (p.b.keywords || []).includes(k)).slice(0, 2);
+    return `<li class="muted sm">${esc((am && am.name) || '')} ↔ ${esc((bm && bm.name) || '')}${sh.length ? ` · ${esc(sh.join(', '))}` : ''}</li>`;
+  }).join('') || '<li class="muted sm">아직 연결이 없어요.</li>';
+
+  const proxyOn = typeof proxyReady === 'function' && proxyReady();
+  const proxyTxt = guestMode ? '🎲 샘플 체험 — 실제 연동은 꺼져 있어요'
+    : proxyOn ? '🔌 프록시 연결됨 · GitHub 실연동 가능'
+    : '🔌 로그인하면 GitHub 실연동이 켜져요';
+
+  return `
+    <section class="rail-card">
+      <p class="eyebrow">03 / CREATE · 만들어요</p>
+      <h2>마일스톤</h2>
+      <ul class="rail-list">${msHTML}</ul>
+      <div class="rail-add"><input type="text" data-rail-input="milestone" placeholder="새 마일스톤" aria-label="새 마일스톤"><button class="btn sm" data-rail-add="milestone">추가</button></div>
+    </section>
+    <section class="rail-card">
+      <h2>산출물</h2>
+      <ul class="rail-list">${dlHTML}</ul>
+      <div class="rail-add"><input type="text" data-rail-input="deliverable" placeholder="새 산출물(SSRD 등)" aria-label="새 산출물"><button class="btn sm" data-rail-add="deliverable">산출물 추가</button></div>
+    </section>
+    <section class="rail-card">
+      <p class="eyebrow">02 / CONNECT · 연결하고</p>
+      <h2>팀원 기여도</h2>
+      <ul class="rail-list contrib">${contrib}</ul>
+      <h3>🔗 연결 인사이트</h3>
+      <ul class="rail-list">${insight}</ul>
+    </section>
+    <p class="rail-proxy muted sm">${proxyTxt}</p>`;
+}
+
+function wireRail(host) {
+  host.querySelectorAll('[data-ms-status]').forEach(b => b.onclick = () => {
+    const m = state.milestones.find(x => x.id === b.dataset.msStatus);
+    if (m) { updateMilestone(m.id, { status: nextStatus(m.status, ['todo', 'doing', 'done']) }); renderWorkspace(); }
+  });
+  host.querySelectorAll('[data-dl-status]').forEach(b => b.onclick = () => {
+    const d = state.deliverables.find(x => x.id === b.dataset.dlStatus);
+    if (d) { updateDeliverable(d.id, { status: nextStatus(d.status, ['draft', 'review', 'submitted']) }); renderWorkspace(); }
+  });
+  const addMs = host.querySelector('[data-rail-add="milestone"]');
+  if (addMs) addMs.onclick = () => { const inp = host.querySelector('[data-rail-input="milestone"]'); addMilestone({ title: (inp && inp.value.trim()) || '새 마일스톤' }); renderWorkspace(); };
+  const addDl = host.querySelector('[data-rail-add="deliverable"]');
+  if (addDl) addDl.onclick = () => { const inp = host.querySelector('[data-rail-input="deliverable"]'); addDeliverable({ title: (inp && inp.value.trim()) || '새 산출물', docType: 'custom' }); renderWorkspace(); };
 }
