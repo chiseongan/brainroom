@@ -63,7 +63,7 @@ service cloud.firestore {
     // 다른 팀원이 내 기록의 분류를 바꾸려면 그 기록에 대한 보정 요청을 확인하는 경우여야 한다 (RQ-14)
     function appliedCorrectionOk(t, id) {
       let c = get(/databases/$(database)/documents/teams/$(t)/corrections/$(request.resource.data.appliedCorrection)).data;
-      return c.get('itemId', '') == id && c.requesterUid != request.auth.uid;
+      return c.get('itemId', '') == id && c.requesterUid != request.auth.uid && c.status == 'pending';
     }
     // 투표는 내 표만 넣고 뺄 수 있다
     function ownVoteOnly(t) {
@@ -73,7 +73,7 @@ service cloud.firestore {
     }
     function correctionOk(t) {
       let c = get(/databases/$(database)/documents/teams/$(t)/corrections/$(request.resource.data.correctionId)).data;
-      return c.kind == 'missing'
+      return c.kind == 'missing' && c.status == 'pending' // 처리한 요청으로 기록을 계속 찍어낼 수 없다
         && c.memberId == request.resource.data.memberId
         && c.requesterUid == request.resource.data.ownerUid
         && c.requesterUid != request.auth.uid;
@@ -103,7 +103,9 @@ service cloud.firestore {
         && str(request.resource.data.teamName, 200) && request.resource.data.get('members', []).size() == 0;
       allow read: if isMember(t) || isProf(t);
       // 명단은 roster 문서로 옮겼다. 예전 방의 members 배열은 고칠 수 없다 (읽기만 해서 옮긴다)
+      // 연동 대상(links)은 팀장만: 팀원이 피해자의 비공개 저장소를 지정하면 피해자의 토큰으로 내용을 가져와 팀에 공개하게 된다
       allow update: if (isMember(t) && onlyKeys(['teamName', 'course', 'decisionDismissed', 'links'])
+          && (!changed('links') || isOwner(t))
           && str(request.resource.data.get('teamName', ''), 200) && str(request.resource.data.get('course', ''), 200))
         // 팀장 넘기기: 받는 사람은 이미 이 방의 팀원이어야 한다
         || (isOwner(t) && onlyKeys(['ownerUid'])

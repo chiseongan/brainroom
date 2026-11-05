@@ -175,6 +175,9 @@ await deny('남의 횟수 기록 종류를 바꿀 수 없다', updateDoc(p(ben()
 const team = () => `teams/${T}`;
 const entry = (id, o = {}) => ({ id, name: id, color: '#555555', ...o });
 await deny('예전 명단 배열을 고칠 수 없다', updateDoc(doc(ben(), team()), { members: ROSTER.map(m => (m.id === 'mA' ? { ...m, name: '가짜' } : m)) }));
+await deny('연동 대상은 팀원이 못 바꾼다 (피해자 토큰으로 비공개 저장소를 읽히는 공격)', updateDoc(doc(ben(), team()), { links: { github: 'victim/private-repo' } }));
+await allow('연동 대상은 팀장이 정한다', updateDoc(doc(owner(), team()), { links: { github: 'team/repo' } }));
+await allow('방 이름은 팀원도 바꾼다', updateDoc(doc(ben(), team()), { teamName: '새 이름' }));
 await deny('팀장도 예전 명단 배열은 못 고친다', updateDoc(doc(owner(), team()), { members: [] }));
 await deny('명단 배열이 찬 방을 새로 만들 수 없다', setDoc(doc(as('uNew2'), 'teams/N9'), { teamName: 'x', ownerUid: 'uNew2', members: [entry('a', { color: '"><img>' })] }));
 await env.withSecurityRulesDisabled(async ctx => {
@@ -205,6 +208,7 @@ await allow('팀장은 예전 방의 칸을 옮긴다', setDoc(p(owner(), '/rost
 
 // 보정 요청 (RQ-14)
 await seed();
+await allow('확인자가 빠진 기여를 요청자 이름으로 추가', setDoc(p(ben(), '/items/fromCorr'), record('fromCorr', 'mA', 'uAmy', 'team', { correctionId: 'corr1' })));
 await deny('자기 보정 요청을 스스로 확인할 수 없다', updateDoc(p(amy(), '/corrections/corr1'), { status: 'applied', confirmedBy: 'mA' }));
 await deny('확인자를 다른 사람으로 남길 수 없다', updateDoc(p(ben(), '/corrections/corr1'), { status: 'applied', confirmedBy: 'mO' }));
 await allow('다른 팀원이 자기 이름으로 확인', updateDoc(p(ben(), '/corrections/corr1'), { status: 'applied', confirmedBy: 'mB' }));
@@ -214,7 +218,7 @@ await allow('내 기여 보정 요청', setDoc(p(ben(), '/corrections/mine'), { 
 await deny('남의 이름으로 변경 이력을 쓸 수 없다', setDoc(p(ben(), '/logs/forged'), { at: 1, text: '위조', by: 'uAmy' }));
 await deny('누가 썼는지 없는 이력은 안 된다', setDoc(p(ben(), '/logs/noby'), { at: 1, text: '위조' }));
 await allow('변경 이력 추가', setDoc(p(ben(), '/logs/mine'), { at: 1, text: '내용', by: 'uBen' }));
-await allow('확인자가 빠진 기여를 요청자 이름으로 추가', setDoc(p(ben(), '/items/fromCorr'), record('fromCorr', 'mA', 'uAmy', 'team', { correctionId: 'corr1' })));
+await deny('처리한 요청으로 기록을 찍어낼 수 없다', setDoc(p(ben(), '/items/fromCorr2'), record('fromCorr2', 'mA', 'uAmy', 'team', { correctionId: 'corr1' })));
 await deny('변경 이력은 고칠 수 없다', updateDoc(p(amy(), '/logs/log1'), { text: '변조' }));
 await deny('변경 이력은 지울 수 없다', deleteDoc(p(owner(), '/logs/log1')));
 

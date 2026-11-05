@@ -188,12 +188,26 @@ async function scenarioRoom() {
   await sleep(500); // 이력이 두 번 쓰이지 않는지도 본다
   ok((await list(`teams/${T}/logs`)).length === 1, '변경 이력 저장 (한 번만)');
 
+  // 분류 보정: B가 요청 → C가 확인 (기록·횟수 기록·요청이 모두 규칙을 통과해야 한다)
+  const memoId = B.eval(`addItem({ memberId: state.meId, type: 'memo', title: '분류 보정 시험', content: '내용', visibility: 'team' }).id`);
+  await until(async () => (await getDoc(`teams/${T}/itemMeta/${memoId}`)));
+  B.eval(`state.corrections.push({ id: 'corr2', memberId: state.meId, requesterUid: authUser.uid, kind: 'reclass', note: '', status: 'pending', createdAt: Date.now(), itemId: '${memoId}', type: 'idea' }); saveState()`);
+  await until(() => C.eval(`state.corrections.some(c => c.id === 'corr2') && itemById('${memoId}') && !itemById('${memoId}')._stub`));
+  C.eval(`applyCorrection(state.corrections.find(c => c.id === 'corr2'), state.meId)`);
+  await until(async () => (await getDoc(`teams/${T}/corrections/corr2`))?.status === 'applied' && (await getDoc(`teams/${T}/itemMeta/${memoId}`))?.type === 'idea');
+  ok((await getDoc(`teams/${T}/items/${memoId}`))?.type === 'idea' && (await getDoc(`teams/${T}/itemMeta/${memoId}`))?.type === 'idea', '분류 보정이 기록과 횟수 기록에 모두 반영');
+  // 내 칸만: 앱이 보내는 명단 쓰기가 규칙을 통과한다
+  const denied0 = await B.eval(`teamRef().update({ links: { github: 'victim/private' } }).then(() => 'ok').catch(e => e.code)`);
+  ok(denied0 === 'permission-denied', '팀원은 연동 대상을 못 바꿈');
+  B.__errors.length = 0;
+  ok(B.eval('canEditLinks()') === false && A.eval('canEditLinks()') === true, '연동 대상 수정 권한 표시');
+
   // 교수자
   const profLink = await invite(A, 'prof');
   await P.eval(`joinFromInput(${JSON.stringify(profLink)})`);
   await until(() => P.eval('cloud.profTeams && cloud.profTeams.length === 1'));
   const pv = JSON.parse(P.eval(`JSON.stringify(cloud.profTeams[0])`));
-  ok(pv.items.length === 4, '교수자: 기록 횟수는 모두 집계');
+  ok(pv.items.length === 5, '교수자: 기록 횟수는 모두 집계');
   await until(async () => (await list(`teams/${T}/itemMeta`)).length === (await list(`teams/${T}/items`)).length);
   ok((await list(`teams/${T}/itemMeta`)).length === (await list(`teams/${T}/items`)).length, '기록과 횟수 기록이 항상 짝을 이룸');
   ok(pv.items.filter(i => i.title).map(i => i.title).join() === '회수율 통계', '교수자: 내용은 교수자까지 기록만');
@@ -236,7 +250,7 @@ async function scenarioRoom() {
   P.eval(`weeklyFrom = weekStart(); render()`);
   await until(() => P.document.querySelector('.weekly-card'));
   const wkP = P.document.querySelector('.weekly-card').textContent;
-  ok(/기록 4건/.test(wkP) && wkP.includes('주제는 다회용기'), '주간 요약: 교수자도 횟수·결정을 봄');
+  ok(/기록 5건/.test(wkP) && wkP.includes('주제는 다회용기'), '주간 요약: 교수자도 횟수·결정을 봄');
   ok(!wkP.includes('비밀 내용') && !wkP.includes('나만 보는 메모') && !wkP.includes('다회용기 순환 서비스'), '주간 요약: 교수자에게 팀 기록 내용은 안 보임');
 
   // 화면 전부 돌려 보기 (예외가 없는지)
@@ -463,6 +477,34 @@ async function scenarioManage({ A, B, C, P, X, T, mB, mC }) {
   ok(B.eval(`cloud.showSetup`), '삭제한 사람은 방 선택 화면으로');
   noDenied(B, 'B', ['Missing or insufficient']);
   C.__errors.length = 0;
+}
+
+// 기존 기록을 온라인 방으로 올리기 (샘플 전체): 앱이 보내는 모든 문서가 규칙을 통과해야 한다
+async function scenarioUpload() {
+  say('\n=== 기존 기록을 온라인 방으로 올리기');
+  closeAll();
+  await wipe();
+  const A = await open('uA');
+  A.eval(`saveSuppressed = true; window.__ws = sampleWorkspace(); saveSuppressed = false; window.__wsCounts = { items: __ws.items.length, decisions: __ws.decisions.length, quests: __ws.quests.length, members: __ws.members.length }`);
+  const want = JSON.parse(A.eval('JSON.stringify(__wsCounts)'));
+  A.eval('state = null');
+  await A.eval('cloudCreateTeamFrom(__ws)');
+  await until(() => A.eval('cloud.loaded && state && state.items.length'));
+  const T = A.eval('cloud.teamId');
+  ok((await list(`teams/${T}/items`)).length === want.items && (await list(`teams/${T}/itemMeta`)).length === want.items, `기록 ${want.items}개와 횟수 기록을 모두 올림`);
+  ok((await list(`teams/${T}/roster`)).length === want.members, `명단 ${want.members}칸`);
+  ok((await list(`teams/${T}/decisions`)).length === want.decisions && (await list(`teams/${T}/quests`)).length === want.quests, '결정·퀘스트');
+  noDenied(A, 'A');
+  // 주인 없는 칸 정리
+  await A.eval(`teamRef().collection('roster').doc('slot1').set({ id: 'slot1', name: '장난', color: '#123456', at: 9 })`);
+  await until(() => A.eval(`Boolean(member('slot1'))`));
+  await A.eval('openManageModal()');
+  await until(() => A.document.querySelector('[data-cloud="slot:slot1"]'));
+  A.document.querySelector('[data-cloud="slot:slot1"]').click();
+  await until(() => A.eval(`!member('slot1')`));
+  ok(A.eval(`!member('slot1')`), '팀장이 주인 없는 명단 칸을 지움');
+  A.eval('closeModal()');
+  noDenied(A, 'A');
 }
 
 // 삭제가 중간에 끊겨도 이어서 지울 수 있다 + 예전 방 호환
@@ -774,6 +816,7 @@ async function run() {
     await scenarioCalls(ctx);
     await scenarioManage(ctx);
     await scenarioLegacy();
+    await scenarioUpload();
     await scenarioXss();
   }
   if (!ONLY || ONLY === 'ai') await window.scenarioAi?.();

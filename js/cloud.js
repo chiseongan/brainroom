@@ -110,7 +110,11 @@ async function cloudOnAuth() {
     const params = new URLSearchParams(location.search);
     let joined = null;
     if (params.get('team')) {
-      joined = await cloudJoin(params.get('team'), params.get('code') || '', params.get('as') === 'prof' ? 'prof' : 'student');
+      // 링크를 여는 것만으로 낯선 방에 들어가지 않게 묻는다 (참여하면 팀장에게 내 이름·이메일이 보인다)
+      const already = await teamRef(params.get('team')).collection('members').doc(authUser.uid).get().then(s => s.exists).catch(() => false);
+      if (isId(params.get('team')) && (already || confirm(`초대 링크로 ${params.get('as') === 'prof' ? '교수자로 ' : ''}방에 참여할까요?\n\n참여하면 방 사람들에게 내 이름과 이메일(${authUser.email})이 보여요. 모르는 사람이 보낸 링크라면 취소하세요.`))) {
+        joined = await cloudJoin(params.get('team'), params.get('code') || '', params.get('as') === 'prof' ? 'prof' : 'student');
+      }
       history.replaceState(null, '', location.pathname);
     }
     await loadMyTeams();
@@ -539,7 +543,7 @@ async function cloudCreateTeamFrom(src) {
     });
     ws.decisions.forEach(x => ops.push([ref.collection('decisions').doc(x.id), x]));
     ws.quests.forEach(x => ops.push([ref.collection('quests').doc(x.id), x]));
-    ws.changeLog.forEach(x => { const id = x.id || uid(); ops.push([ref.collection('logs').doc(id), { ...x, id }]); });
+    ws.changeLog.forEach(x => { const id = x.id || uid(); ops.push([ref.collection('logs').doc(id), { ...x, id, by: authUser.uid }]); });
     // 규칙이 한 묶음에서 읽을 수 있는 문서가 20개라 (기록마다 짝이 되는 문서를 확인한다) 작게 나눠 올린다
     for (let i = 0; i < ops.length; i += 24) {
       const batch = db.batch();
@@ -701,6 +705,7 @@ async function openManageModal() {
     <h3>참여자 ${roles.length}명</h3>
     <ul class="manage-list">${rows}</ul>
     <p class="muted sm">내보낸 사람의 기록은 방에 남고, 그 사람은 더 이상 방을 보거나 쓸 수 없어요. 초대 링크를 함께 다시 발급하면 다시 들어올 수도 없어요.</p>
+    ${freeSlotsHTML(roles)}
     <h3>초대 링크 다시 발급</h3>
     <p class="muted sm">링크는 ${INVITE_DAYS}일 동안 쓸 수 있어요. 만료됐거나 밖으로 샜을 때 다시 발급하세요. 예전 링크는 바로 막히고, 이미 들어온 사람은 그대로예요.</p>
     <div class="modal-actions" style="justify-content:flex-start">
@@ -717,6 +722,19 @@ async function openManageModal() {
       ${deleting ? '<button class="btn sm" data-cloud="undelete">삭제 취소</button>' : ''}
     </div>
     <div class="modal-actions"><button class="btn ghost" data-close>닫기</button></div>`);
+}
+
+// 주인 없는 명단 칸: 팀원이 장난으로 만든 칸을 치울 수 있다 (기록이 있는 칸은 기록을 위해 남긴다)
+function freeSlotsHTML(roles) {
+  const used = new Set(roles.map(r => r.memberId));
+  const free = state.members.filter(m => !m.uid && !used.has(m.id));
+  if (!free.length) return '';
+  return `<h3>주인 없는 명단 칸 ${free.length}개</h3>
+    <ul class="manage-list">${free.map(m => {
+      const n = state.items.filter(i => i.memberId === m.id).length;
+      return `<li class="manage-row"><span><b>${esc(m.name)}</b> <span class="muted sm">기록 ${n}개</span></span>
+        ${n ? '' : `<button class="btn sm danger" data-cloud="slot:${esc(m.id)}">칸 지우기</button>`}</li>`;
+    }).join('')}</ul>`;
 }
 
 async function cloudKick(uid) {
@@ -908,7 +926,7 @@ function parseInvite(text) {
 
 async function joinFromInput(text) {
   const inv = parseInvite(text);
-  if (!inv) return toast('초대 링크를 확인해 주세요. 방 참여자에게 받은 링크 전체를 붙여넣으면 돼요');
+  if (!inv || !isId(inv.team)) return toast('초대 링크를 확인해 주세요. 방 참여자에게 받은 링크 전체를 붙여넣으면 돼요');
   initDb();
   cloud.busy = true;
   render();
@@ -1001,6 +1019,9 @@ document.addEventListener('click', async e => {
   } else if (act === 'kick') {
     if (!confirm('이 사람을 방에서 내보낼까요?')) return openManageModal();
     await cloudKick(arg);
+    return openManageModal();
+  } else if (act === 'slot') {
+    await teamRef().collection('roster').doc(arg).delete().catch(writeFailed);
     return openManageModal();
   } else if (act === 'rotate') {
     if (!confirm('초대 링크를 다시 발급할까요? 예전 링크는 바로 막혀요.')) return openManageModal();

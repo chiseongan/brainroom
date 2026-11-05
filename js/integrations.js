@@ -416,6 +416,11 @@ function connectionBadge(status) {
     || '<span class="vis-badge vis-me">연동 안 됨</span>';
 }
 
+// 온라인 방에서는 팀장만 연동 대상을 정한다: 각자 자기 토큰으로 그 대상을 읽어 가져오기 때문이다
+function canEditLinks() {
+  return !cloudOn() || cloud.owner;
+}
+
 function renderIntegrations() {
   const conf = loadInteg();
   const links = state.links || {};
@@ -438,6 +443,7 @@ function renderIntegrations() {
       </div>
     </div>
 
+    ${canEditLinks() ? '' : '<p class="notice">🔒 <b>방 공용</b> 저장소·파일·페이지는 팀장만 정할 수 있어요. 내 토큰으로 무엇을 읽을지 다른 사람이 마음대로 바꾸지 못하게 하기 위해서예요.</p>'}
     ${guestMode ? `<p class="notice">🎲 <b>샘플 체험 중이에요.</b> 아래 연결 상태와 방의 작업 기록은 GitHub·Figma·Notion API 응답 형식으로 만든 <b>가상 데이터</b>이고, 실제 서비스로 요청을 보내지 않아요. <b>지금 가져오기</b>를 누르면 새 커밋이 생긴 것처럼 보여 줘요. 실제로 연결하려면 로그인하세요.</p>` : ''}
     <div class="integ-grid">
       ${aiProxyCardHTML()}
@@ -453,7 +459,7 @@ function renderIntegrations() {
           <div class="modal-actions">${conf.github ? '<button type="button" class="btn ghost sm" data-ig="disconnect:github">연결 해제</button>' : ''}<button class="btn primary">연결</button></div>
         </form>
         <details class="sm"><summary>토큰 만드는 법</summary>
-          <p>공개 저장소는 토큰 없이 아이디만 넣으면 돼요. 비공개 저장소는 <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">GitHub → Fine-grained token</a>에서 그 저장소만 고르고, 권한은 <b>Contents · Pull requests · Metadata 읽기</b>만 주세요.</p></details>
+          <p>계정으로 연결은 공개 저장소만 읽어요 (쓰기 권한을 달라고 하지 않아요). 공개 저장소는 토큰 없이 아이디만 넣으면 돼요. 비공개 저장소는 <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">GitHub → Fine-grained token</a>에서 그 저장소만 고르고, 권한은 <b>Contents · Pull requests · Metadata 읽기</b>만 주세요.</p></details>
       </article>
 
       <article class="card integ">
@@ -512,6 +518,7 @@ document.addEventListener('submit', async e => {
   // 새로 입력한 토큰이면 그것을, 아니면 저장돼 있던(암호화된) 토큰을 풀어서 쓴다
   const typedToken = async (old, typed) => (typed && !/^•+$/.test(typed) ? typed.trim() : openToken(old));
   state.links ||= {};
+  if (['github-repo', 'figma-file', 'notion-page'].includes(kind) && !canEditLinks()) return toast('연동 대상은 방을 만든 사람(팀장)만 정할 수 있어요');
   try {
     if (kind === 'github-repo') {
       const repo = parseRepo(v);
@@ -570,6 +577,7 @@ document.addEventListener('click', e => {
   const [act, a, b] = btn.dataset.ig.split(':');
   if (act === 'sync') return syncAllWork(true);
   if (act === 'unlink') {
+    if (!canEditLinks()) return toast('연동 대상은 방을 만든 사람(팀장)만 정할 수 있어요');
     state.links[a] = (state.links[a] || []).filter((_, i) => i !== +b);
     saveState();
   } else if (act === 'disconnect') {
@@ -591,7 +599,7 @@ const OAUTH_CODE_KEY = 'brainroom:oauth-code';
 const OAUTH_AUTHORIZE = {
   notion: (id, redirect, st) => `https://api.notion.com/v1/oauth/authorize?client_id=${encodeURIComponent(id)}&response_type=code&owner=user&redirect_uri=${encodeURIComponent(redirect)}&state=${st}`,
   figma: (id, redirect, st) => `https://www.figma.com/oauth?client_id=${encodeURIComponent(id)}&redirect_uri=${encodeURIComponent(redirect)}&scope=${encodeURIComponent('current_user:read,file_content:read,file_versions:read,file_comments:read')}&state=${st}&response_type=code`,
-  github: (id, redirect, st) => `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(id)}&redirect_uri=${encodeURIComponent(redirect)}&scope=${encodeURIComponent('repo read:user')}&state=${st}`,
+  github: (id, redirect, st) => `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(id)}&redirect_uri=${encodeURIComponent(redirect)}&scope=${encodeURIComponent('read:user')}&state=${st}`,
 };
 const oauthRedirect = () => `${location.origin}${location.pathname}`;
 
@@ -698,7 +706,7 @@ function aiProxyCardHTML() {
   return `
     <article class="card integ ai-card">
       <header><h2>🤖 AI 정리</h2>${f.summarize ? '<span class="vis-badge vis-prof">켜짐</span>' : '<span class="vis-badge vis-me">프록시에 키 없음</span>'}</header>
-      <p class="muted sm">회의·AI 대화·내 발언을 소형 AI 모델(${esc(aiCardCfg.model || '')})로 요약하고 키워드를 뽑아요. 한도(하루 ${aiCardCfg.limits?.dailyRequestsPerUser ?? '-'}회, 월 ${(aiCardCfg.limits?.monthlyBudgetKRW ?? 0).toLocaleString()}원)를 넘거나 꺼 두면 규칙 기반으로 정리해요.${f.vision ? ' Figma 화면 그림도 읽어요.' : ''}${f.turn ? ' 회의 중계 서버도 켜져 있어요.' : ''}</p>
+      <p class="muted sm">회의·AI 대화·내 발언을 소형 AI 모델(${esc(aiCardCfg.model || '')})로 요약하고 키워드를 뽑아요. 쓰면 내용이 Anthropic API로 전송돼요 (이메일·전화번호 형태는 가린 뒤). 한도(하루 ${aiCardCfg.limits?.dailyRequestsPerUser ?? '-'}회, 월 ${(aiCardCfg.limits?.monthlyBudgetKRW ?? 0).toLocaleString()}원)를 넘거나 꺼 두면 규칙 기반으로 정리해요.${f.vision ? ' Figma 화면 그림도 읽어요.' : ''}${f.turn ? ' 회의 중계 서버도 켜져 있어요.' : ''}</p>
       <label class="check sm"><input type="checkbox" data-ig="aiswitch" ${aiSwitchOn() ? 'checked' : ''} ${f.summarize ? '' : 'disabled'}> AI 정리 쓰기 (이 브라우저)</label>
       ${f.summarize && proxyReady() ? '<p class="muted sm" id="aiUsage"></p>' : ''}
       ${oauthBtns ? `<h3>계정으로 연결 (토큰 붙여넣기 대신)</h3><div class="modal-actions" style="justify-content:flex-start">${oauthBtns}</div>` : ''}
