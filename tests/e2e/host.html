@@ -1038,12 +1038,31 @@ async function scenarioDesign() {
   closeFrame('uA');
 }
 
+// 시작/로그인 화면: 콘스텔레이션 히어로 + COLLECT/CONNECT/CREATE
+async function scenarioLanding() {
+  say('\n=== 시작화면: 콘스텔레이션 히어로');
+  closeAll();
+  const A = await open('uA');
+  await A.eval('renderLogin()');
+  const txt = await A.eval('document.getElementById("app").textContent');
+  ok(txt.includes('흩어진 생각이') && txt.includes('하나의 방향이 되도록'), '히어로 헤드라인');
+  const sampleBtn = await A.eval("!!document.getElementById('guestSampleBtn') && /샘플 팀으로 체험하기/.test(document.getElementById('guestSampleBtn').textContent)");
+  ok(sampleBtn, '샘플 팀으로 체험하기 버튼 유지');
+  const dots = await A.eval('!!document.querySelector(".hero-dots")');
+  ok(dots, '점 모티프 컨테이너(.hero-dots)');
+  const rm = await A.eval(`[...document.styleSheets].some(s => { try { return [...s.cssRules].some(r => r.type === 4 && /prefers-reduced-motion/.test(r.conditionText || (r.media && r.media.mediaText) || '') && /hero-dot/.test(r.cssText)); } catch (e) { return false; } })`);
+  ok(rm, 'prefers-reduced-motion에서 점 애니메이션 정지 규칙');
+  await axeCheck(A, '시작화면(히어로)');
+  closeFrame('uA');
+}
+
 async function run() {
   if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
   if (ONLY === 'consent') { await scenarioConsent(); await scenarioDelete(); closeAll(); return; }
   if (ONLY === 'stress') { await scenarioStress(); closeAll(); return; }
   if (ONLY === 'design') { await scenarioDesign(); closeAll(); return; }
-  if (!ONLY) await scenarioDesign();
+  if (ONLY === 'landing') { await scenarioLanding(); closeAll(); return; }
+  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); }
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
     await scenarioCalls(ctx);

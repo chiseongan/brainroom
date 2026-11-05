@@ -162,6 +162,27 @@ main { max-width: 1320px; margin: 0 auto; padding: 24px; }
 .setup-card > .btn, .setup-card > .file-btn { width: 100%; margin-top: 8px; }
 .or { margin: 16px 0 8px; color: var(--muted); font-size: 13px; }
 
+/* ---------- 콘스텔레이션 시작화면(히어로) ---------- */
+.hero { position: relative; min-height: 86vh; display: grid; place-items: center; overflow: hidden; padding: 56px 16px; }
+.hero-dots { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+.hero-dot {
+  position: absolute; border-radius: 50%; opacity: .6;
+  background: currentColor; box-shadow: 0 0 8px currentColor;
+  animation: heroTwinkle 4.6s ease-in-out infinite;
+}
+@keyframes heroTwinkle { 0%, 100% { transform: translateY(0); opacity: .3; } 50% { transform: translateY(-10px); opacity: .9; } }
+.hero-inner { position: relative; z-index: 1; width: min(760px, 100%); text-align: center; display: grid; gap: 16px; justify-items: center; }
+.hero-title { font-size: clamp(34px, 6vw, 56px); line-height: 1.08; letter-spacing: -.02em; font-weight: 800; margin: 2px 0; }
+.hero-sub { color: var(--muted); font-size: 16px; line-height: 1.6; margin: 0; }
+.hero-cta { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-top: 6px; }
+.hero-cta .google-btn { width: auto; }
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 28px; width: 100%; text-align: left; }
+.step { border: 1px solid var(--line); border-radius: 16px; padding: 18px; background: color-mix(in srgb, var(--surface) 72%, transparent); display: grid; gap: 4px; }
+.step h2 { font-size: 18px; margin: 2px 0; }
+.step p { color: var(--muted); font-size: 13px; line-height: 1.55; margin: 0; }
+@media (max-width: 640px) { .steps { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .hero-dot { animation: none; } }
+
 /* ---------- 2.5D 씬 공통 ---------- */
 .iso { display: block; width: 100%; height: 100%; }
 .iso text { user-select: none; }

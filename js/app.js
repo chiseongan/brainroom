@@ -193,24 +193,39 @@ const GOOGLE_LOGO = `<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden
   <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.2 0-11.5-4.1-13.4-9.9l-7.9 6.1C6.6 42.6 14.6 48 24 48z"/>
 </svg>`;
 
+// 콘스텔레이션 점 모티프: 흩어진 점들이 은은히 깜빡이며 떠오른다 (prefers-reduced-motion에서 정지)
+function heroDotsHTML() {
+  const DOTS = [[8, 18, 6, 0], [18, 62, 4, 1.2], [12, 82, 5, .6], [26, 30, 3, 2.1], [33, 74, 7, .3], [44, 16, 4, 1.6], [52, 54, 5, 2.4], [60, 86, 3, .9], [68, 24, 6, 1.3], [74, 66, 4, 2.0], [82, 40, 5, .5], [88, 78, 3, 1.8], [90, 14, 4, 2.6], [38, 46, 3, 1.0], [22, 8, 4, .8], [58, 8, 3, 2.2]];
+  const col = ['var(--dot-1)', 'var(--dot-2)', 'var(--dot-3)', 'var(--dot-dim)'];
+  return DOTS.map(([top, left, sz, delay], i) =>
+    `<span class="hero-dot" style="top:${top}%;left:${left}%;width:${sz}px;height:${sz}px;color:${col[i % col.length]};animation-delay:${delay}s"></span>`).join('');
+}
+
 function renderLogin() {
   $('#topbar').hidden = true;
   const fileMode = location.protocol === 'file:';
+  const params = new URLSearchParams(location.search);
   app.innerHTML = `
-  <section class="setup">
-    <div class="setup-card">
-      <div class="logo">🧠</div>
-      <h1>BrainRoom</h1>
-      <p class="lead">각자 찾아본 자료가 <b>방 인테리어</b>가 되는 팀 브레인스토밍 오피스</p>
-      ${new URLSearchParams(location.search).get('guardian') ? '<p class="notice">👪 자녀의 이용 동의 요청이에요. <b>보호자 본인의</b> Google 계정으로 로그인해 주세요.</p>' : ''}
-      ${new URLSearchParams(location.search).get('team') ? '<p class="notice">🔑 방 초대 링크로 들어왔어요. 로그인하면 바로 그 방에 참여해요.</p>' : ''}
-      <button class="btn google-btn" id="googleLogin" ${fileMode ? 'disabled' : ''}>${GOOGLE_LOGO}<span>Google 계정으로 로그인</span></button>
+  <section class="hero">
+    <div class="hero-dots" aria-hidden="true">${heroDotsHTML()}</div>
+    <div class="hero-inner">
+      <p class="eyebrow">BrainRoom</p>
+      <h1 class="hero-title">흩어진 생각이<br>하나의 방향이 되도록</h1>
+      <p class="hero-sub">GitHub · Notion · Figma에 흩어진 팀플 조각을 한곳에 모아,<br>무엇이 연결되고 무엇이 결정됐는지 한 화면에서 봅니다.</p>
+      ${params.get('guardian') ? '<p class="notice">👪 자녀의 이용 동의 요청이에요. <b>보호자 본인의</b> Google 계정으로 로그인해 주세요.</p>' : ''}
+      ${params.get('team') ? '<p class="notice">🔑 방 초대 링크로 들어왔어요. 로그인하면 바로 그 방에 참여해요.</p>' : ''}
+      <div class="hero-cta">
+        <button class="btn google-btn" id="googleLogin" ${fileMode ? 'disabled' : ''}>${GOOGLE_LOGO}<span>Google 계정으로 로그인</span></button>
+        <button class="btn-ghost" id="guestSampleBtn">🎲 샘플 팀으로 체험하기</button>
+      </div>
       ${fileMode
-        ? '<p class="notice">⚠️ 파일을 직접 열면 Google 로그인이 동작하지 않아요.<br>로컬 서버(<code>python -m http.server 5173</code>)로 실행해 주세요.</p>'
-        : '<p class="muted sm">무료 서비스예요. 로그인한 뒤 나이 확인과 동의 화면이 나와요.</p>'}
-      <div class="or">또는</div>
-      <button class="btn" id="guestSampleBtn">🎲 로그인 없이 샘플 팀으로 체험하기</button>
-      <p class="muted sm">샘플의 사람과 내용은 모두 지어낸 것이고, 아무 데도 저장되지 않아요.</p>
+        ? '<p class="notice">⚠️ 파일을 직접 열면 Google 로그인이 동작하지 않아요.<br>로컬 서버(<code>python -m http.server 5178</code>)로 실행해 주세요.</p>'
+        : '<p class="muted sm">무료 서비스예요. 로그인하면 나이 확인·동의 화면이 나와요. 샘플의 사람·내용은 지어낸 것이고 저장되지 않아요.</p>'}
+      <div class="steps">
+        <article class="step"><p class="eyebrow">01 / COLLECT</p><h2>모으고</h2><p>GitHub 커밋·이슈, 노션 문서, 피그마 작업을 자동으로 한 피드에 모읍니다.</p></article>
+        <article class="step"><p class="eyebrow">02 / CONNECT</p><h2>연결하고</h2><p>흩어진 조각에서 키워드·주제를 뽑아 누구의 작업이 어디에 닿는지 이어줍니다.</p></article>
+        <article class="step"><p class="eyebrow">03 / CREATE</p><h2>만들어요</h2><p>마일스톤·산출물·결정으로 모여 팀이 어디까지 왔는지 한눈에 보여줍니다.</p></article>
+      </div>
     </div>
   </section>`;
 }
