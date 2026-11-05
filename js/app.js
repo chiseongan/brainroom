@@ -473,6 +473,7 @@ function renderMeeting() {
   </section>`;
 
   requestAnimationFrame(drawLinks);
+  if (typeof initHallPlayer === 'function') requestAnimationFrame(initHallPlayer);
 }
 
 function drawLinks() {

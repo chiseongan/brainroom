@@ -180,15 +180,38 @@ main { max-width: 1320px; margin: 0 auto; padding: 24px; }
 
 /* ---------- 회의실 씬 ---------- */
 .hall {
+  position: relative;
   border-radius: 20px;
   overflow: hidden;
-  background: radial-gradient(ellipse at 50% 42%, #ece6da, #cfc7b8);
+  background: radial-gradient(ellipse at 50% 38%, #eee8dc, #c7bfae);
   box-shadow: var(--shadow);
   margin-bottom: 28px;
 }
 .hall .iso { max-height: 76vh; min-height: 320px; }
 .door-panel { transition: opacity .25s; }
-.door-g:hover .door-panel, .door-g:focus .door-panel { opacity: 0; }
+.door-g:hover .door-panel, .door-g:focus .door-panel,
+.door-g.near .door-panel { opacity: 0; }
+.door-g.near { filter: drop-shadow(0 0 8px rgba(29, 78, 216, .9)); }
+.hall-hint {
+  position: absolute; left: 14px; bottom: 14px;
+  background: rgba(20, 22, 35, .78); color: #fff;
+  font-size: 12.5px; padding: 6px 12px; border-radius: 999px;
+  pointer-events: none; backdrop-filter: blur(2px);
+}
+.hall-hint b { color: #ffd98a; }
+/* 걸어다니는 '나' 캐릭터: 쉴 때는 멈춰 있고, 움직일 때 다리·팔이 번갈아 흔들리는 걷기 모션 */
+.brplayer .avatar { animation: none; }
+.brwalker .leg, .brwalker .arm { transform-box: fill-box; transform-origin: 50% 2%; }
+.brwalker.walking .avatar { animation: brbob .44s ease-in-out infinite; }
+.brwalker.walking .leg-l { animation: brstep .44s ease-in-out infinite; }
+.brwalker.walking .leg-r { animation: brstep .44s ease-in-out infinite; animation-delay: -.22s; }
+.brwalker.walking .arm-l { animation: brswing .44s ease-in-out infinite; animation-delay: -.22s; }
+.brwalker.walking .arm-r { animation: brswing .44s ease-in-out infinite; }
+@keyframes brbob { 0%, 100% { transform: translateY(0); } 25% { transform: translateY(-2.5px); } 50% { transform: translateY(0); } 75% { transform: translateY(-2.5px); } }
+@keyframes brstep { 0% { transform: rotate(17deg); } 50% { transform: rotate(-17deg); } 100% { transform: rotate(17deg); } }
+@keyframes brswing { 0% { transform: rotate(-13deg); } 50% { transform: rotate(13deg); } 100% { transform: rotate(-13deg); } }
+.brplayer-hint { animation: float 1.4s ease-in-out infinite; }
+@media (max-width: 560px) { .hall-hint { font-size: 11px; left: 8px; bottom: 8px; padding: 5px 9px; } }
 .board-head { scroll-margin-top: 80px; }
 
 /* ---------- 로그인 ---------- */
