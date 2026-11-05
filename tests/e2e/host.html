@@ -1116,7 +1116,28 @@ async function scenarioNav() {
   closeFrame('uA');
 }
 
+// 온라인 팀에서 마일스톤·산출물이 Firestore로 동기화되고 다른 팀원에게 보이는가
+async function scenarioCockpitSync() {
+  say('\n=== 코크핏 온라인 동기화: 마일스톤·산출물');
+  closeAll();
+  await wipe();
+  const A = await open('uA'), B = await open('uB');
+  const T = await makeRoom(A, '코크핏조');
+  await A.eval("addDeliverable({ title: 'SSRD 초안', docType: 'SSRD' }); addMilestone({ title: '정의 단계', kind: 'phase' });");
+  const dls = await until(async () => { const l = await list(`teams/${T}/deliverables`); return l.some(d => d.title === 'SSRD 초안') ? l : false; });
+  ok(!!dls, '산출물이 Firestore에 동기화됨');
+  const mss = await until(async () => { const l = await list(`teams/${T}/milestones`); return l.some(m => m.title === '정의 단계') ? l : false; });
+  ok(!!mss, '마일스톤이 Firestore에 동기화됨');
+  const link = await invite(A, 'student');
+  await joinAs(B, link, '김단유');
+  const got = await until(() => B.eval("(state.deliverables || []).some(d => d.title === 'SSRD 초안')"));
+  ok(got, '다른 팀원 B가 산출물을 받음');
+  noDenied(A, 'A');
+  closeAll();
+}
+
 async function run() {
+  if (ONLY === 'cockpitsync') { await scenarioCockpitSync(); closeAll(); return; }
   if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
   if (ONLY === 'consent') { await scenarioConsent(); await scenarioDelete(); closeAll(); return; }
   if (ONLY === 'stress') { await scenarioStress(); closeAll(); return; }
@@ -1125,7 +1146,7 @@ async function run() {
   if (ONLY === 'cockpit') { await scenarioCockpit(); closeAll(); return; }
   if (ONLY === 'rail') { await scenarioRail(); closeAll(); return; }
   if (ONLY === 'nav') { await scenarioNav(); closeAll(); return; }
-  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); await scenarioCockpit(); await scenarioRail(); await scenarioNav(); }
+  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); await scenarioCockpit(); await scenarioRail(); await scenarioNav(); await scenarioCockpitSync(); }
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
     await scenarioCalls(ctx);

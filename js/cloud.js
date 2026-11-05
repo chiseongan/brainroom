@@ -201,9 +201,10 @@ function cloudOpenTeam(teamId) {
   cloud.docs = {
     team: null, roster: new Map(), meta: new Map(), itemsTeam: new Map(), itemsProf: new Map(), itemsMine: new Map(),
     decisions: new Map(), quests: new Map(), corrections: new Map(), logs: new Map(), calls: new Map(),
+    milestones: new Map(), deliverables: new Map(),
   };
   cloud.callsDenied = false;
-  cloud.synced = { team: {}, roster: {}, items: {}, decisions: {}, quests: {}, corrections: {}, logs: {} };
+  cloud.synced = { team: {}, roster: {}, items: {}, decisions: {}, quests: {}, corrections: {}, logs: {}, milestones: {}, deliverables: {} };
   state = migrate({
     version: 1, teamId, teamName: '', course: '', members: [], items: [], meId: null,
     view: 'meeting', roomId: null, viewer: 'student',
@@ -240,7 +241,7 @@ function cloudOpenTeam(teamId) {
     rebuildState();
   }, fail));
   // 받은 문서는 바로 정화한다. 형식이 잘못된 문서는 없는 것으로 본다 (js/sanitize.js)
-  const cleanOf = { roster: (raw, id) => cleanMember({ ...raw, id }), meta: cleanItemMeta, itemsTeam: cleanItem, itemsProf: cleanItem, itemsMine: cleanItem, decisions: cleanDecision, quests: cleanQuest, corrections: cleanCorrection, logs: cleanLog };
+  const cleanOf = { roster: (raw, id) => cleanMember({ ...raw, id }), meta: cleanItemMeta, itemsTeam: cleanItem, itemsProf: cleanItem, itemsMine: cleanItem, decisions: cleanDecision, quests: cleanQuest, corrections: cleanCorrection, logs: cleanLog, milestones: cleanMilestone, deliverables: cleanDeliverable };
   const cleanDocs = (snap, fn) => new Map(snap.docs.map(d => [d.id, fn(d.data(), d.id)]).filter(([, v]) => v));
   const listen = (query, key) => cloud.unsubs.push(query.onSnapshot(snap => {
     cloud.docs[key] = cleanDocs(snap, cleanOf[key]);
@@ -256,7 +257,7 @@ function cloudOpenTeam(teamId) {
   listen(t.collection('items').where('visibility', '==', 'team'), 'itemsTeam');
   listen(t.collection('items').where('visibility', '==', 'prof'), 'itemsProf');
   listen(t.collection('items').where('ownerUid', '==', authUser.uid), 'itemsMine');
-  ['decisions', 'quests', 'corrections', 'logs'].forEach(c => listen(t.collection(c), c));
+  ['decisions', 'quests', 'corrections', 'logs', 'milestones', 'deliverables'].forEach(c => listen(t.collection(c), c));
   // 회의 기록: 예전 규칙이면 읽기가 거절되는데, 그래도 방은 쓸 수 있게 따로 처리한다
   cloud.unsubs.push(t.collection('calls').onSnapshot(snap => {
     cloud.docs.calls = cleanDocs(snap, cleanCall);
@@ -370,7 +371,7 @@ function rebuildState() {
   state.items = items;
   cloud.synced.items = Object.fromEntries([...full].map(([id, it]) => [id, stableStr(it)]));
 
-  for (const c of ['decisions', 'quests', 'corrections']) {
+  for (const c of ['decisions', 'quests', 'corrections', 'milestones', 'deliverables']) {
     state[c] = [...d[c].values()];
     cloud.synced[c] = Object.fromEntries([...d[c]].map(([id, x]) => [id, stableStr(x)]));
   }
@@ -491,6 +492,8 @@ function cloudPush() {
   syncCollection(t, 'decisions', state.decisions);
   syncCollection(t, 'quests', state.quests);
   syncCollection(t, 'corrections', state.corrections);
+  syncCollection(t, 'milestones', state.milestones);
+  syncCollection(t, 'deliverables', state.deliverables);
   state.changeLog.forEach(l => { l.id ??= uid(); });
   syncCollection(t, 'logs', state.changeLog, { createOnly: true });
 }
@@ -553,6 +556,8 @@ async function cloudCreateTeamFrom(src) {
     });
     ws.decisions.forEach(x => ops.push([ref.collection('decisions').doc(x.id), x]));
     ws.quests.forEach(x => ops.push([ref.collection('quests').doc(x.id), x]));
+    ws.milestones.forEach(x => ops.push([ref.collection('milestones').doc(x.id), x]));
+    ws.deliverables.forEach(x => ops.push([ref.collection('deliverables').doc(x.id), x]));
     ws.changeLog.forEach(x => { const id = x.id || uid(); ops.push([ref.collection('logs').doc(id), { ...x, id, by: authUser.uid }]); });
     // 규칙이 한 묶음에서 읽을 수 있는 문서가 20개라 (기록마다 짝이 되는 문서를 확인한다) 작게 나눠 올린다
     for (let i = 0; i < ops.length; i += 24) {

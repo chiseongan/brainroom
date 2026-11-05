@@ -265,6 +265,19 @@ service cloud.firestore {
         allow delete: if isMember(t) || tearingDown(t);
       }
 
+      // 프로젝트 코크핏: 마일스톤·산출물 (팀원이 관리, 교수자도 진행 상황을 본다)
+      match /milestones/{id} {
+        allow read: if isMember(t) || isProf(t);
+        allow create, update: if isMember(t) && safeId(id) && str(request.resource.data.get('title', ''), 500);
+        allow delete: if isMember(t) || tearingDown(t);
+      }
+
+      match /deliverables/{id} {
+        allow read: if isMember(t) || isProf(t);
+        allow create, update: if isMember(t) && safeId(id) && str(request.resource.data.get('title', ''), 500);
+        allow delete: if isMember(t) || tearingDown(t);
+      }
+
       match /corrections/{id} {
         allow read: if isMember(t);
         // 보정 요청은 내 기여에 대해서만

@@ -37,7 +37,7 @@ function feedCardHTML(item, conn = 0) {
   const meta = TYPE_META[item.type] || {};
   const icon = src ? src.icon : (meta.icon || '•');
   const kw = (item.keywords || []).slice(0, 5).map(k => `<span class="chip">${esc(k)}</span>`).join('');
-  const link = item.url ? `<a class="fc-link" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" data-stop>원문 ↗</a>` : '';
+  const link = item.url ? `<a class="fc-link" href="${esc(safeUrl(item.url))}" target="_blank" rel="noopener noreferrer" data-stop>원문 ↗</a>` : '';
   const badge = conn ? `<span class="chip fc-conn">🔗 연결 ${conn}</span>` : '';
   const prev = item.content ? `<p class="fc-prev">${esc(trunc(item.content, 140))}</p>` : '';
   return `<div class="feed-card" data-item="${esc(item.id)}" style="--mc:${esc((m && m.color) || '#8ea2ff')}">
@@ -136,7 +136,7 @@ function openItemPanel(id) {
     <header><h2>${esc(it.title)}</h2><button class="btn icon" data-close-panel aria-label="닫기">✕</button></header>
     <p class="muted sm"><i class="dot" style="--mc:${esc((m && m.color) || '#8ea2ff')}"></i>${esc((m && m.name) || '?')} · ${esc(src ? src.name : (meta.label || it.type))} · ${typeof timeAgo === 'function' ? timeAgo(it.createdAt) : ''}</p>
     ${it.content ? `<p class="panel-body">${esc(it.content)}</p>` : ''}
-    ${it.url ? `<a class="btn-ghost sm panel-link" href="${esc(it.url)}" target="_blank" rel="noopener noreferrer">원문 열기 ↗</a>` : ''}
+    ${it.url ? `<a class="btn-ghost sm panel-link" href="${esc(safeUrl(it.url))}" target="_blank" rel="noopener noreferrer">원문 열기 ↗</a>` : ''}
     ${(it.keywords && it.keywords.length) ? `<div class="chips panel-tags">${it.keywords.map(k => `<span class="chip">${esc(k)}</span>`).join('')}</div>` : ''}
     ${connected ? `<h3>🔗 연결된 조각</h3><ul class="conn-list">${connected}</ul>` : ''}`;
   panel.classList.add('open');
@@ -165,7 +165,7 @@ function railHTML() {
     const o = member(d.ownerId);
     return `<li class="rail-row" data-dl="${esc(d.id)}">
       <span class="rail-main"><b>${esc(d.title)}</b>
-        <span class="muted sm"><i class="dot" style="--mc:${esc((o && o.color) || '#8ea2ff')}"></i>${esc((o && o.name) || '담당 미정')}${d.url ? ` · <a href="${esc(d.url)}" target="_blank" rel="noopener noreferrer">문서 ↗</a>` : ''}</span></span>
+        <span class="muted sm"><i class="dot" style="--mc:${esc((o && o.color) || '#8ea2ff')}"></i>${esc((o && o.name) || '담당 미정')}${d.url ? ` · <a href="${esc(safeUrl(d.url))}" target="_blank" rel="noopener noreferrer">문서 ↗</a>` : ''}</span></span>
       <button class="chip dl-status s-${esc(d.status)}" data-dl-status="${esc(d.id)}">${DL_STATUS[d.status] || esc(d.status)}</button>
     </li>`;
   }).join('') || '<li class="muted sm">아직 산출물이 없어요.</li>';

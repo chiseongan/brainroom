@@ -19,6 +19,7 @@ function makeApp(fakeFetch, names = ['안치성', '김단유', '박채연']) {
   vm.runInContext(['themes', 'nlp', 'sanitize', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport', 'sampleapi', 'workspace'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
     + `\n;var guestMode = false, authUser = null, cloud = { loaded: true };
     function render() {} function toast() {} function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } function fmtDate() { return ''; } function trunc(s) { return s; } function timeAgo() { return ''; }
+    function safeUrl(u) { const c = cleanUrl(u); return !c ? '' : /^https?:\\/\\//i.test(c) ? c : 'https://' + c; }
     async function aiFeature() { return false; }
     function hashCode(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return Math.abs(h); }
     state = newWorkspace('t', ${JSON.stringify(names)}); state.meId = state.members[0].id;
@@ -349,6 +350,8 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
     ok(!vis.includes('i3'), '다른 팀원의 visibility:me 아이템 제외 (canSee)');
     const card = run(`feedCardHTML({ id: 'x', memberId: ${JSON.stringify(me)}, type: 'memo', title: '<script>bad</script>', keywords: [], createdAt: 0 })`);
     ok(card.includes('&lt;script&gt;') && !card.includes('<script>bad'), '카드 제목 이스케이프(저장형 XSS 방어)');
+    const jsCard = run(`feedCardHTML({ id: 'y', memberId: ${JSON.stringify(me)}, type: 'link', title: '링크', url: 'javascript:alert(1)', keywords: [], createdAt: 0 })`);
+    ok(!/javascript:/i.test(jsCard), 'feedCardHTML: javascript: URL이 href에서 제거됨(safeUrl)');
   }
 
   // ---------- 결정 추출 품질 (SSRD LS-7: 80% 이상) ----------

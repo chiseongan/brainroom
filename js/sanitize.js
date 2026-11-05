@@ -137,6 +137,26 @@ function cleanCorrection(raw, id = raw?.id) {
   return c;
 }
 
+function cleanMilestone(raw, id = raw?.id) {
+  if (!raw || !isId(id)) return null;
+  const m = { ...raw, id, title: asStr(raw.title).slice(0, 500), phase: asStr(raw.phase).slice(0, 60), dueAt: raw.dueAt == null ? null : finite(raw.dueAt), createdAt: finite(raw.createdAt) };
+  if (!['todo', 'doing', 'done'].includes(m.status)) m.status = 'todo';
+  if (!['phase', 'present', 'custom'].includes(m.kind)) m.kind = 'custom';
+  fix(m, 'createdBy', isIdOrNull, null);
+  return m;
+}
+
+function cleanDeliverable(raw, id = raw?.id) {
+  if (!raw || !isId(id)) return null;
+  const d = { ...raw, id, title: asStr(raw.title).slice(0, 500), createdAt: finite(raw.createdAt), dueAt: raw.dueAt == null ? null : finite(raw.dueAt) };
+  if (!['SSRD', 'SSAD', 'test', 'present', 'custom'].includes(d.docType)) d.docType = 'custom';
+  if (!['draft', 'review', 'submitted'].includes(d.status)) d.status = 'draft';
+  fix(d, 'ownerId', isIdOrNull, null);
+  fix(d, 'milestoneId', isIdOrNull, null);
+  d.url = cleanUrl(d.url);
+  return d;
+}
+
 const cleanLog = (raw, id = raw?.id) => (raw ? { ...raw, ...(id ? { id: asStr(id) } : {}), at: finite(raw.at), text: asStr(raw.text) } : null);
 
 function cleanCall(raw, id = raw?.id) {
@@ -181,6 +201,8 @@ function sanitizeWorkspace(ws) {
   ws.decisions = cleanList(ws.decisions, cleanDecision);
   ws.quests = cleanList(ws.quests, cleanQuest);
   ws.corrections = cleanList(ws.corrections, cleanCorrection);
+  ws.milestones = cleanList(ws.milestones, cleanMilestone);
+  ws.deliverables = cleanList(ws.deliverables, cleanDeliverable);
   ws.changeLog = cleanList(ws.changeLog, cleanLog);
   ws.calls = Array.isArray(ws.calls) ? cleanList(ws.calls, cleanCall) : ws.calls;
   ws.decisionDismissed = strList(ws.decisionDismissed);
