@@ -362,6 +362,39 @@ async function turnCredentials(env, user) {
 
 // ---------- 라우터 ----------
 
+// ---------- GitHub 콘텐츠 프록시 (읽기 전용, 무상태 토큰 패스스루) ----------
+// 허용 경로만(SSRF·남용 방지). 그 외 403. 클라이언트 토큰은 저장하지 않고 Bearer로 전달만 한다.
+const GH_ALLOW = [
+  /^repos\/[^/]+\/[^/]+\/commits(\/[^?]*)?$/,
+  /^repos\/[^/]+\/[^/]+\/(pulls|issues)(\/\d+)?$/,
+  /^repos\/[^/]+\/[^/]+\/pulls\/\d+\/(reviews|comments)$/,
+  /^user$/,
+  /^users\/[^/]+$/,
+];
+
+async function githubProxy(req, env, user) {
+  if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed', '읽기 전용(GET)만 지원해요');
+  const url = new URL(req.url);
+  const path = url.pathname.replace(/^\/v1\/proxy\/github\//, '');
+  if (!GH_ALLOW.some(re => re.test(path))) throw new HttpError(403, 'path_not_allowed', '허용되지 않은 GitHub 경로예요');
+  await checkLimits(env, user.uid);
+  const token = req.headers.get('X-BR-Token') || '';
+  const base = env.GITHUB_API_URL || 'https://api.github.com';
+  const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'brainroom', 'X-GitHub-Api-Version': '2022-11-28' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const upstream = await fetch(`${base}/${path}${url.search}`, { headers });
+  await recordUsage(env, user.uid, {}); // 프록시 요청 1건 = 사용량 1 (토큰 비용 없음)
+  const out = {};
+  for (const h of ['Content-Type', 'ETag', 'Last-Modified', 'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset', 'Link']) {
+    const v = upstream.headers.get(h);
+    if (v) out[h] = v;
+  }
+  return new Response(await upstream.text(), {
+    status: upstream.status,
+    headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...out, ...corsHeaders(req, env) },
+  });
+}
+
 function config(env) {
   const oauth = {};
   for (const name of Object.keys(OAUTH)) {
@@ -370,6 +403,7 @@ function config(env) {
   }
   return {
     features: { summarize: Boolean(env.ANTHROPIC_API_KEY), vision: Boolean(env.ANTHROPIC_API_KEY), turn: Boolean(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN), oauth },
+    proxy: { github: true }, // GitHub 콘텐츠 프록시(읽기 전용)는 비밀키가 필요 없어 항상 사용 가능
     model: MODEL,
     limits: { dailyRequestsPerUser: Number(env.DAILY_REQUESTS_PER_USER || 60), monthlyBudgetKRW: Number(env.MONTHLY_BUDGET_KRW || 50000), dailyBudgetKRW: Number(env.DAILY_BUDGET_KRW || 5000) },
   };
@@ -385,6 +419,7 @@ export default {
       const origin = req.headers.get('Origin');
       if (origin && !allowedOrigins(env).includes(origin)) throw new HttpError(403, 'bad_origin');
       const user = await verifyFirebaseUser(req, env);
+      if (pathname.startsWith('/v1/proxy/github/')) return await githubProxy(req, env, user);
       if (req.method === 'POST' && pathname === '/v1/summarize') return json(req, env, await summarize(req, env, user));
       if (req.method === 'POST' && pathname === '/v1/vision') return json(req, env, await vision(req, env, user));
       const oauth = pathname.match(/^\/v1\/oauth\/([a-z]+)(\/refresh)?$/);

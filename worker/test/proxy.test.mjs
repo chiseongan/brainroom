@@ -47,6 +47,8 @@ const upstream = http.createServer(async (req, res) => {
   if (req.url === '/github-token') return send(200, { access_token: 'gho_x', scope: 'repo' });
   if (req.url === '/figma-token') return send(200, { access_token: 'figu_x', refresh_token: 'r', expires_in: 7776000, user_id_string: '123' });
   if (req.url === '/turn') return send(201, { iceServers: { urls: ['stun:stun.cloudflare.com:3478', 'turn:turn.cloudflare.com:3478?transport=udp'], username: 'u', credential: 'c' } });
+  // 가짜 GitHub API: 받은 경로·Authorization을 그대로 되돌려 준다 (GITHUB_API_URL=`${U}/gh`)
+  if (req.url.startsWith('/gh/')) return send(200, { ok: true, path: req.url.slice(3), auth: req.headers.authorization || '' });
   send(404, {});
 });
 await new Promise(r => upstream.listen(0, r));
@@ -209,5 +211,28 @@ claudeMode = 'bad';
 const leak = await call('POST', '/v1/summarize', { kind: 'ai', text: 'x' }, await idToken({ sub: 'leak-check' }));
 claudeMode = 'ok';
 ok(leak.status === 400 && !JSON.stringify(leak.body).includes('internal secret detail'), 'upstream error details are not exposed');
+
+// ---------- GitHub 콘텐츠 프록시 (읽기 전용) ----------
+const ghEnv = { ...env, GITHUB_API_URL: `${U}/gh` };
+const ghTok = await idToken({ sub: 'gh-user' });
+const gh = async (method, path, { token, brToken, e = ghEnv } = {}) => {
+  const res = await worker.fetch(new Request(`https://proxy.test${path}`, {
+    method, headers: { Origin: 'http://localhost:5173', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(brToken ? { 'X-BR-Token': brToken } : {}) },
+  }), e);
+  return { status: res.status, body: await res.json().catch(() => null), cors: res.headers.get('Access-Control-Allow-Origin') };
+};
+
+seen.length = 0;
+const ghOk = await gh('GET', '/v1/proxy/github/repos/o/r/commits?per_page=5', { token: ghTok, brToken: 'ghp_test123' });
+ok(ghOk.status === 200, `GitHub 프록시 allowlist 경로 → 200 (${ghOk.status})`);
+ok(ghOk.cors === 'http://localhost:5173', 'GitHub 프록시 응답에 CORS 허용 헤더');
+const ghUp = seen.filter(x => x.path.startsWith('/gh/')).at(-1);
+ok(ghUp && ghUp.headers.authorization === 'Bearer ghp_test123', 'X-BR-Token이 Bearer로 변환되어 GitHub에 전달');
+ok(ghUp && ghUp.path === '/gh/repos/o/r/commits?per_page=5', `경로·쿼리 보존 (${ghUp && ghUp.path})`);
+ok((await gh('GET', '/v1/proxy/github/user/keys', { token: ghTok, brToken: 'x' })).status === 403, 'allowlist 밖 경로(user/keys) → 403');
+ok((await gh('POST', '/v1/proxy/github/repos/o/r/commits', { token: ghTok, brToken: 'x' })).status === 405, 'GET 외 메서드 → 405');
+ok((await gh('GET', '/v1/proxy/github/repos/o/r/commits', { brToken: 'x' })).status === 401, 'Firebase 로그인 없음 → 401');
+ok((await gh('GET', '/v1/proxy/github/repos/o/r/commits', { token: ghTok, brToken: 'x', e: { ...ghEnv, DAILY_REQUESTS_PER_USER: '0' } })).status === 429, '일일 한도 초과 → 429');
+ok((await call('GET', '/v1/config')).body.proxy?.github === true, 'config에 proxy.github:true');
 
 upstream.close();
