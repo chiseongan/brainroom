@@ -277,7 +277,7 @@ async function figmaDesignText(key, token, version) {
   }
   cache[key] = { version: file.version || version, text, at: Date.now() };
   const keep = Object.entries(cache).sort((a, b) => b[1].at - a[1].at).slice(0, 20);
-  try { localStorage.setItem(FIGMA_TEXT_KEY, JSON.stringify(Object.fromEntries(keep))); } catch (e) { /* 무시 */ }
+  if (!guestMode) try { localStorage.setItem(FIGMA_TEXT_KEY, JSON.stringify(Object.fromEntries(keep))); } catch (e) { /* 무시 */ }
   return text;
 }
 
@@ -435,7 +435,7 @@ function renderIntegrations() {
     <div class="page-head">
       <div>
         <h1>🔌 연동</h1>
-        <p class="muted">각자 <b>본인 토큰</b>으로 연결하고, <b>본인 작업만</b> 가져와요. 토큰은 이 브라우저에만 <b>암호화해서</b> 저장되고 팀·서버로 올라가지 않아요. 최근 ${SYNC_DAYS}일 작업을 15분마다 가져와요.</p>
+        <p class="muted">각자 <b>본인 토큰</b>으로 연결하고, <b>본인 작업만</b> 가져와요. 토큰은 이 브라우저에만 <b>암호화해서</b> 저장되고 팀 데이터에 올라가지 않아요. (계정으로 연결할 때와 갱신할 때만 프록시를 거쳐요) 최근 ${SYNC_DAYS}일 작업을 15분마다 가져와요.</p>
       </div>
       <div class="filters">
         <span class="muted sm">${guestMode ? '샘플 데이터를 보여 주는 중이에요' : last ? `마지막으로 가져온 시각 ${fmtDate(last)}` : '아직 가져온 적 없어요'}</span>

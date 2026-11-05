@@ -75,12 +75,29 @@ const wipe = () => fetch('http://127.0.0.1:8181/emulator/v1/projects/demo-brainr
 
 // ---------- 앱 한 벌 ----------
 const frames = {};
-async function open(u, { proxy = false } = {}) {
+// 앱의 동의 판을 그대로 읽어 '이미 동의한 사용자'를 만든다
+let consentVersion = null;
+async function giveConsent(u) {
+  consentVersion ??= (await (await fetch('/js/legal.js')).text()).match(/CONSENT_VERSION = '([^']+)'/)[1];
+  const fields = { consent: encode({ version: consentVersion, at: 1, over14: true, terms: true, privacy: true }) };
+  await fetch(`${EMU}/users/${u}?updateMask.fieldPaths=consent`, { method: 'PATCH', headers: admin, body: JSON.stringify({ fields }) });
+}
+// 접근성 도구(axe-core)로 지금 화면을 검사한다
+let axeSource = null;
+async function axeCheck(w, where) {
+  axeSource ??= await (await fetch('/e2e/axe.js')).text();
+  if (!w.axe) w.eval(axeSource);
+  const v = JSON.parse(await w.eval(`axe.run(document, { resultTypes: ['violations'] }).then(r => JSON.stringify(r.violations.map(v => ({ id: v.id, impact: v.impact, n: v.nodes.length, ex: v.nodes[0].target.join(' ').slice(0, 60), why: (v.nodes[0].any[0]?.message || '').slice(0, 100) }))))`));
+  ok(!v.length, `접근성(axe): ${where}${v.length ? ` → ${v.map(x => `${x.id}×${x.n} ${x.ex} ${x.id === 'color-contrast' ? x.why : ''}`).join(' | ')}` : ''}`);
+}
+
+async function open(u, { proxy = false, consent = true, query = '' } = {}) {
   closeFrame(u);
+  if (consent) await giveConsent(u);
   const f = document.createElement('iframe');
   f.allow = 'microphone; camera';
   f.style.cssText = 'width:1000px;height:700px';
-  f.src = `/app.html?u=${u}${proxy ? `&proxy=${encodeURIComponent(PROXY)}` : ''}&t=${Date.now()}`;
+  f.src = `/app.html?u=${u}${proxy ? `&proxy=${encodeURIComponent(PROXY)}` : ''}&t=${Date.now()}${query}`;
   document.getElementById('frames').appendChild(f);
   frames[u] = f;
   await new Promise(r => { f.onload = r; });
@@ -125,7 +142,7 @@ async function scenarioRoom() {
   const mA = A.eval('state.meId');
   ok(team?.ownerUid === 'uA', '방 만들기: 팀 문서');
   ok((await getDoc(`teams/${T}/claims/${mA}`))?.uid === 'uA', '방 만들기: 내 팀원 칸을 선점');
-  ok((await getDoc(`teams/${T}/members/uA`))?.email === 'a@x.com', '방 만들기: 역할 문서에 이름·이메일');
+  ok((await getDoc(`teams/${T}/members/uA`))?.name === '안치성' && !(await getDoc(`teams/${T}/members/uA`)).email, '방 만들기: 역할 문서에 이메일을 저장하지 않음');
 
   const link = await invite(A, 'student');
   await joinAs(B, link, '김단유');
@@ -153,7 +170,8 @@ async function scenarioRoom() {
   const bad = await X.eval(`cloudJoin('${T}', 'wrong-code', 'student')`);
   ok(bad === null && toastText(X).includes('초대 링크'), '틀린 초대 코드 거절 + 안내');
   await until(async () => (await list(`teams/${T}/accessLogs`)).some(l => l.uid === 'uX'));
-  ok((await list(`teams/${T}/accessLogs`)).some(l => l.uid === 'uX' && l.email === 'x@x.com'), '막힌 접근이 기록됨 (ONRQ-5)');
+  ok((await list(`teams/${T}/accessLogs`)).some(l => l.uid === 'uX' && !l.email), '막힌 접근이 기록됨 (이메일 없이) (ONRQ-5)');
+  ok((await list(`teams/${T}/roster`)).every(m => !m.email && !m.photo), '명단에 이메일·사진이 없음');
   X.__errors.length = 0;
 
   // 공유 범위별 기록 (앱 함수 그대로)
@@ -252,6 +270,49 @@ async function scenarioRoom() {
   const wkP = P.document.querySelector('.weekly-card').textContent;
   ok(/기록 5건/.test(wkP) && wkP.includes('주제는 다회용기'), '주간 요약: 교수자도 횟수·결정을 봄');
   ok(!wkP.includes('비밀 내용') && !wkP.includes('나만 보는 메모') && !wkP.includes('다회용기 순환 서비스'), '주간 요약: 교수자에게 팀 기록 내용은 안 보임');
+
+  // 키보드만으로: 그림 속 물건·문도 Tab으로 가고 Enter로 눌린다
+  A.eval(`go('room', state.meId)`);
+  await until(() => A.document.querySelector('.iso .zone[data-zone="shelf"][tabindex="0"]'));
+  const shelf = A.document.querySelector('.iso .zone[data-zone="shelf"]');
+  ok(shelf?.getAttribute('role') === 'button' && shelf.getAttribute('aria-label')?.includes('책장'), '방 물건: 키보드 초점과 이름이 있음');
+  shelf.dispatchEvent(new A.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await until(() => A.eval(`panelSpec?.zone === 'shelf'`), 3000);
+  ok(A.eval(`panelSpec?.zone === 'shelf'`), 'Enter로 방 물건 열기');
+  A.eval('closePanel()');
+  A.eval(`go('meeting')`);
+  await until(() => A.document.querySelector(`.iso [data-go="room"][data-member="${mB}"][tabindex="0"]`));
+  A.document.querySelector(`.iso [data-go="room"][data-member="${mB}"]`).dispatchEvent(new A.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+  await until(() => A.eval(`state.view === 'room' && state.roomId === '${mB}'`), 3000);
+  ok(A.eval(`state.roomId === '${mB}'`), 'Space로 팀원 방 문 열기');
+  A.eval(`go('office')`);
+  await until(() => A.document.querySelector('.room-card[tabindex="0"]'));
+  ok(!A.document.querySelector('.room.mini [tabindex]'), '작은 방 그림 안은 Tab에 걸리지 않음');
+  const opener = A.document.getElementById('menuBtn');
+  opener.focus();
+  opener.click();
+  await sleep(150);
+  const modal = A.document.getElementById('modal');
+  ok(modal.getAttribute('role') === 'dialog' && modal.getAttribute('aria-modal') === 'true' && modal.contains(A.document.activeElement), '창이 열리면 초점이 창 안으로');
+  const tabbables = [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), select, textarea, a[href], summary')].filter(x => x.offsetParent !== null);
+  tabbables.at(-1).focus();
+  A.document.dispatchEvent(new A.KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+  ok(A.document.activeElement === tabbables[0], 'Tab이 창 밖으로 나가지 않음');
+  A.document.dispatchEvent(new A.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(100);
+  ok(modal.hidden && A.document.activeElement === opener, 'Esc로 닫으면 초점이 원래 자리로');
+  // 물품 버튼에 숫자가 보이는 경우까지 검사한다
+  A.eval(`addItem({ memberId: state.meId, type: 'memo', title: '다회용기 회수', content: '재활용', visibility: 'team' })`);
+  // 접근성 도구로 화면별 검사
+  for (const v of ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations']) {
+    A.eval(`go('${v}')`);
+    await sleep(250);
+    await axeCheck(A, `화면 ${v}`);
+  }
+  A.eval('openMenu()'); await sleep(200); await axeCheck(A, '설정 창'); A.eval('closeModal()');
+  // 받아쓰기는 기본으로 꺼져 있다
+  A.eval(`go('calls')`); await sleep(150);
+  ok(A.document.querySelector('[name="stt"]')?.checked === false, '받아쓰기 기본값은 꺼짐');
 
   // 화면 전부 돌려 보기 (예외가 없는지)
   for (const v of ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations']) {
@@ -380,7 +441,7 @@ async function scenarioManage({ A, B, C, P, X, T, mB, mC }) {
   A.document.querySelector('[data-cloud="manage"]').click();
   await until(() => A.document.querySelector('.manage-list'));
   ok(A.document.querySelectorAll('.manage-row').length === 4, '방 관리: 참여자 4명');
-  ok(A.document.querySelector('.manage-log')?.textContent.includes('x@x.com'), '방 관리: 막힌 접근 기록이 보임');
+  ok(A.document.querySelector('.manage-log')?.textContent.includes('join'), '방 관리: 막힌 접근 기록이 보임');
   ok(!B.eval(`cloudMenuHTML()`).includes('data-cloud="manage"'), '팀원 메뉴에는 방 관리가 없음');
 
   // 재발급
@@ -479,6 +540,156 @@ async function scenarioManage({ A, B, C, P, X, T, mB, mC }) {
   C.__errors.length = 0;
 }
 
+// ---------- 동의·나이 확인·보호자 동의 ----------
+async function scenarioConsent() {
+  say('\n=== 동의·나이 확인·보호자 동의');
+  closeAll();
+  await wipe();
+  const Kid = await open('uC', { consent: false }), Adult = await open('uX', { consent: false });
+  await until(() => Adult.document.getElementById('consentForm'));
+  const form = Adult.document.getElementById('consentForm');
+  ok(Boolean(form), '동의 전에는 동의 화면이 먼저 나옴');
+  ok(![...form.querySelectorAll('input')].some(i => i.checked), '동의·나이 항목이 미리 선택돼 있지 않음');
+  ok([...form.querySelectorAll('a')].some(a => a.getAttribute('href') === 'legal/privacy.html') && [...form.querySelectorAll('a')].some(a => a.getAttribute('href') === 'legal/terms.html'), '방침·약관 링크');
+  ok(form.querySelector('#logoutBtn') && !form.querySelector('#logoutBtn').classList.contains('primary'), '거절 버튼이 숨겨져 있지 않음');
+  await axeCheck(Adult, '동의 화면');
+  const denied = await Adult.eval(`db.collection('teams').doc().set({ teamName: 'x', ownerUid: authUser.uid, members: [] }).then(() => 'ok').catch(e => e.code)`);
+  ok(denied === 'permission-denied', '동의 전에는 방을 만들 수 없음 (앱을 건너뛰어도)');
+  Adult.__errors.length = 0;
+  ok(!form.checkValidity(), '필수 항목 없이는 제출되지 않음');
+  form.querySelector('[value="14plus"]').checked = true;
+  form.querySelector('[name="terms"]').checked = true;
+  ok(!form.checkValidity(), '개인정보 동의가 빠지면 제출되지 않음');
+  form.querySelector('[name="privacy"]').checked = true;
+  form.requestSubmit();
+  await until(() => Adult.eval('consentOk() && !cloud.busy'));
+  ok((await getDoc('users/uX'))?.consent?.over14 === true && (await getDoc('users/uX')).consent.at > 0, '동의 기록 저장 (시각·판)');
+  ok(!Adult.document.getElementById('consentForm'), '동의하면 시작 화면으로');
+
+  // 만 14세 미만
+  const kf = Kid.document.getElementById('consentForm');
+  kf.querySelector('[value="under14"]').checked = true;
+  kf.querySelector('[name="terms"]').checked = true;
+  kf.querySelector('[name="privacy"]').checked = true;
+  kf.requestSubmit();
+  await until(() => Kid.document.getElementById('guardianLink'));
+  const link = Kid.document.getElementById('guardianLink')?.value || '';
+  ok(link.includes('guardian='), '만 14세 미만: 보호자 링크가 나옴');
+  await axeCheck(Kid, '보호자 대기 화면');
+  const u = await getDoc('users/uC');
+  ok(u.consent.over14 === false && !JSON.stringify(u).includes('birth'), '생년월일 없이 나이 구간만 저장');
+  const kidDenied = await Kid.eval(`db.collection('teams').doc().set({ teamName: 'x', ownerUid: authUser.uid, members: [] }).then(() => 'ok').catch(e => e.code)`);
+  ok(kidDenied === 'permission-denied', '보호자 동의 전에는 방을 만들 수 없음');
+  const flip = await Kid.eval(`userRef().update({ 'consent.over14': true }).then(() => 'ok').catch(e => e.code)`);
+  ok(flip === 'permission-denied', '혼자 만 14세 이상으로 바꿀 수 없음');
+  Kid.__errors.length = 0;
+  const token = new URL(link).searchParams.get('guardian');
+  // 아이가 직접 링크를 열면
+  const Self = await open('uC', { consent: false, query: `&guardian=${token}` });
+  await until(() => Self.document.body.textContent.includes('보호자가 열어야'));
+  ok(Self.document.body.textContent.includes('보호자가 열어야'), '아이 본인 계정으로는 승인 화면이 안 나옴');
+  closeFrame('uC');
+  // 보호자
+  const G = await open('uP', { consent: false, query: `&guardian=${token}` });
+  await until(() => G.document.getElementById('guardianForm'));
+  const gf = G.document.getElementById('guardianForm');
+  ok(Boolean(gf) && !gf.querySelector('[name="attest"]').checked, '보호자 화면: 확인 항목이 미리 선택돼 있지 않음');
+  await axeCheck(G, '보호자 동의 화면');
+  ok(!gf.checkValidity(), '법정대리인 확인 없이는 동의되지 않음');
+  gf.querySelector('[name="attest"]').checked = true;
+  gf.requestSubmit();
+  await until(async () => (await getDoc(`guardianRequests/${token}`))?.status === 'approved');
+  const req = await getDoc(`guardianRequests/${token}`);
+  ok(req.guardianUid === 'uP' && req.guardianEmail === 'p@x.com' && req.decidedAt > 0, '보호자 동의 기록');
+  closeFrame('uP');
+  const K2 = await open('uC', { consent: false });
+  await until(() => K2.eval('cloud.consentChecked && consentOk()'));
+  ok(K2.eval('consentOk()') && !K2.document.getElementById('guardianLink'), '보호자 승인 후 시작 가능');
+  const T = await makeRoom(K2, '아이의 방');
+  ok(Boolean(await getDoc(`teams/${T}`)), '승인 후 방 만들기 성공');
+  // 철회
+  const G2 = await open('uP', { consent: false, query: `&guardian=${token}` });
+  await until(() => G2.document.querySelector('[data-guardian="revoked"]'));
+  G2.document.querySelector('[data-guardian="revoked"]').click();
+  await until(async () => (await getDoc(`guardianRequests/${token}`))?.status === 'revoked');
+  ok(true, '보호자가 동의 철회');
+  closeFrame('uP'); closeFrame('uC');
+  const K3 = await open('uC', { consent: false });
+  await until(() => K3.document.getElementById('guardianLink'));
+  ok(Boolean(K3.document.getElementById('guardianLink')) && K3.document.body.textContent.includes('동의하지 않았어요'), '철회하면 앱이 막힘');
+  // 동의 판이 바뀌면 다시 묻는다
+  closeFrame('uC');
+  await setDoc('users/uX', { consent: { version: 'old', at: 1, over14: true, terms: true, privacy: true } });
+  const A2 = await open('uX', { consent: false });
+  await until(() => A2.document.getElementById('consentForm'));
+  ok(A2.document.getElementById('consentForm')?.textContent.includes('약관이 바뀌었어요'), '약관이 바뀌면 다시 동의를 받음');
+  closeAll();
+}
+
+// ---------- 내 데이터 내려받기와 계정 삭제 ----------
+async function scenarioDelete() {
+  say('\n=== 내 데이터 내려받기·계정 삭제');
+  closeAll();
+  await wipe();
+  const A = await open('uA'), B = await open('uB');
+  const T = await makeRoom(A, '함께 쓰는 방');
+  await joinAs(B, await invite(A, 'student'), '김단유');
+  const mA = A.eval('state.meId');
+  A.eval(`addItem({ memberId: state.meId, type: 'memo', title: '지울 메모', content: '내 내용', visibility: 'me' })`);
+  B.eval(`addItem({ memberId: state.meId, type: 'memo', title: '남을 메모', content: 'B 내용', visibility: 'team' })`);
+  await until(async () => (await list(`teams/${T}/items`)).length === 2);
+  await setDoc(`teams/${T}/calls/c1`, { id: 'c1', title: '회의', status: 'ended', startedBy: 'uB', startedAt: 1, endedAt: 2, summary: '요약' });
+  await setDoc(`teams/${T}/calls/c1/lines/a`, { uid: 'uA', memberId: mA, name: '안치성', text: 'A가 한 말', at: 1 });
+  await setDoc(`teams/${T}/calls/c1/lines/b`, { uid: 'uB', memberId: 'x', name: '김단유', text: 'B가 한 말', at: 2 });
+  await setDoc(`teams/${T}/calls/c1/peers/uA`, { uid: 'uA', name: '안치성', joinedAt: 1, beat: 1 });
+  await until(() => A.eval(`state.calls.length === 1`));
+  // 내려받기
+  A.eval(`download = (name, text) => { window.__dl = text; }`);
+  A.document.getElementById('menuBtn').click();
+  await until(() => A.document.getElementById('downloadMyData'));
+  A.document.getElementById('downloadMyData').click();
+  await until(() => A.__dl, 8000);
+  const dl = JSON.parse(A.__dl || '{}');
+  ok(dl.account?.email === 'a@x.com' && dl.consent?.over14 === true, '내려받기: 계정과 동의 기록');
+  const room = dl.rooms?.[0];
+  ok(room?.records.some(r => r.title === '지울 메모') && !room.records.some(r => r.title === '남을 메모'), '내려받기: 내 기록만');
+  ok(room?.lines.some(l => l.text === 'A가 한 말') && !room.lines.some(l => l.text === 'B가 한 말'), '내려받기: 내가 한 말만');
+  A.eval('closeModal()');
+  // 혼자인 방도 하나 더
+  await A.eval('cloudClose(); state = null; 1');
+  const solo = await makeRoom(A, '혼자 방');
+  await A.eval(`cloudOpenTeam('${T}')`);
+  await until(() => A.eval('cloud.loaded && state.meId'));
+  // 잘못 입력하면 지우지 않는다
+  A.__promptAnswer = '아니요';
+  A.document.getElementById('menuBtn').click();
+  await until(() => A.document.getElementById('deleteAccountBtn'));
+  A.document.getElementById('deleteAccountBtn').click();
+  await sleep(400);
+  ok(Boolean(await getDoc('users/uA')) && !A.__authDeleted, '확인 문구가 틀리면 지우지 않음');
+  A.__promptAnswer = '삭제';
+  A.document.getElementById('deleteAccountBtn').click();
+  await until(() => A.__authDeleted, 20000);
+  ok(A.__authDeleted === true, '로그인 계정 삭제');
+  ok(!(await getDoc('users/uA')), '계정 문서 삭제');
+  const items = await list(`teams/${T}/items`);
+  ok(!items.some(i => i.ownerUid === 'uA') && items.some(i => i.title === '남을 메모'), '내 기록만 삭제, 다른 사람 기록은 남음');
+  ok(!(await list(`teams/${T}/itemMeta`)).some(i => i.ownerUid === 'uA'), '횟수 기록 삭제');
+  const lines = await list(`teams/${T}/calls/c1/lines`);
+  ok(!lines.some(l => l.uid === 'uA') && lines.some(l => l.uid === 'uB'), '내가 한 말만 삭제');
+  ok(!(await getDoc(`teams/${T}/presence/uA`)) && !(await getDoc(`teams/${T}/members/uA`)) && !(await getDoc(`teams/${T}/claims/${mA}`)), '접속 표시·역할·칸 연결 삭제');
+  const entry = await getDoc(`teams/${T}/roster/${mA}`);
+  ok(entry?.name === '탈퇴한 팀원' && !entry.uid, '명단의 내 이름을 지움');
+  ok((await getDoc(`teams/${T}`))?.ownerUid === 'uB', '내 방은 다른 팀원에게 넘어감');
+  ok(!(await getDoc(`teams/${solo}`)), '혼자인 방은 삭제');
+  ok(!Object.keys(A.localStorage).some(k => k.startsWith('brainroom:')), '이 브라우저의 BrainRoom 데이터 삭제');
+  await until(() => B.eval('cloud.owner'), 8000);
+  ok(B.eval('cloud.owner'), '넘겨받은 팀원에게 방 관리 권한');
+  A.__errors.length = 0;
+  noDenied(B, 'B');
+  closeAll();
+}
+
 // 기존 기록을 온라인 방으로 올리기 (샘플 전체): 앱이 보내는 모든 문서가 규칙을 통과해야 한다
 async function scenarioUpload() {
   say('\n=== 기존 기록을 온라인 방으로 올리기');
@@ -533,6 +744,8 @@ async function scenarioLegacy() {
   await until(async () => (await list(`teams/${T}/roster`)).length === 3, 8000);
   const moved = await list(`teams/${T}/roster`);
   ok(moved.length === 3 && moved.find(m => m.id === 'mFree')?.name === '빈자리', '예전 방: 명단이 roster 문서로 옮겨짐');
+  await until(async () => !(await getDoc(`teams/${T}`)).members?.length, 8000);
+  ok(!(await getDoc(`teams/${T}`)).members?.length, '예전 방: 옮긴 뒤 명단 배열을 비움 (이메일이 남지 않음)');
   ok(A.eval(`state.members.map(m => m.name).join()`) === '안치성,김단유,빈자리', '예전 방: 명단 순서 유지');
   // B(팀원)가 자기 칸을 고치면 roster로 저장되고 A에게 보인다
   B.eval(`member(state.meId).connections = { github: 'ok' }; saveState()`);
@@ -562,6 +775,10 @@ window.scenarioAi = async () => {
   closeAll();
   await wipe();
   const A = await open('uA', { proxy: true }), B = await open('uB', { proxy: true });
+  ok(A.eval('aiSwitchOn()') === false, 'AI 정리는 직접 켜기 전까지 꺼져 있음');
+  const aiOff = await A.eval(`aiSummarize('talk', '내용')`);
+  ok(aiOff === null, '꺼져 있으면 외부로 보내지 않음');
+  A.eval('setAiSwitch(true)');
   const T = await makeRoom(A, 'AI 방');
   await joinAs(B, await invite(A, 'student'), '김단유');
   const mB = B.eval('state.meId');
@@ -810,6 +1027,7 @@ async function scenarioXss() {
 
 async function run() {
   if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
+  if (ONLY === 'consent') { await scenarioConsent(); await scenarioDelete(); closeAll(); return; }
   if (ONLY === 'stress') { await scenarioStress(); closeAll(); return; }
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
@@ -817,6 +1035,8 @@ async function run() {
     await scenarioManage(ctx);
     await scenarioLegacy();
     await scenarioUpload();
+    await scenarioConsent();
+    await scenarioDelete();
     await scenarioXss();
   }
   if (!ONLY || ONLY === 'ai') await window.scenarioAi?.();

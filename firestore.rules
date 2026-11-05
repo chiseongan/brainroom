@@ -33,6 +33,15 @@ service cloud.firestore {
     }
     function str(v, max) { return v is string && v.size() <= max; }
     function ownsClaimAfter(t, m) { return getAfter(claimPath(t, m)).data.uid == request.auth.uid; }
+    // 동의: 약관·방침에 동의했고, 만 14세 미만이면 보호자가 승인해야 방을 만들거나 들어간다
+    function consented() {
+      let c = get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('consent', {});
+      return c.get('terms', false) == true && c.get('privacy', false) == true
+        && (c.get('over14', false) == true
+            || (c.get('guardianToken', '') != ''
+                && get(/databases/$(database)/documents/guardianRequests/$(c.guardianToken)).data.status == 'approved'
+                && get(/databases/$(database)/documents/guardianRequests/$(c.guardianToken)).data.childUid == request.auth.uid));
+    }
     function safeId(v) { return v is string && v.matches('^[A-Za-z0-9_.:-]{1,200}$'); }
     function number(v) { return v is int || v is float; }
     function myMemberId(t) { return get(rolePath(t)).data.memberId; }
@@ -41,8 +50,7 @@ service cloud.firestore {
     function validEntry(e, memberId) {
       return e.id == memberId && safeId(memberId) && str(e.name, 100)
         && e.color is string && e.color.matches('^#[0-9a-fA-F]{6}$')
-        && (e.get('photo', '') == '' || e.photo.matches('^https://[a-z0-9-]+[.]googleusercontent[.]com/[^ "<>]*$'))
-        && str(e.get('email', ''), 200);
+        && !e.keys().hasAny(['email', 'photo']); // 명단에 이메일·사진을 두지 않는다 (필요 없는 개인정보)
     }
 
     // 기록 내용의 최소 검사 (Firestore 문서 한도 1MB 안에서 한 사람이 방을 망가뜨리지 못하게)
@@ -94,11 +102,32 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow read, write: if signedIn() && request.auth.uid == uid;
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid;
+      // 만 14세 미만으로 답한 뒤 혼자 '이상'으로 바꿔 보호자 동의를 건너뛸 수 없다
+      allow update: if signedIn() && request.auth.uid == uid
+        && !(resource.data.get('consent', {}).get('over14', true) == false && request.resource.data.get('consent', {}).get('over14', false) == true);
+    }
+
+    // 보호자 동의 요청. 문서 id가 비밀 링크라 id를 아는 사람만 읽고, 목록은 볼 수 없다
+    match /guardianRequests/{token} {
+      allow get: if signedIn();
+      allow create: if signedIn() && token.size() >= 16 && request.resource.data.childUid == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.keys().hasOnly(['childUid', 'status', 'createdAt', 'version']);
+      // 결정은 아이 본인이 아닌 다른 계정만, 자기 이름으로만. 이미 결정한 보호자만 바꿀 수 있다
+      allow update: if signedIn() && resource.data.childUid != request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'guardianUid', 'guardianEmail', 'decidedAt'])
+        && request.resource.data.status in ['approved', 'rejected', 'revoked']
+        && request.resource.data.guardianUid == request.auth.uid
+        && request.auth.token.get('email', '') != '' && request.resource.data.guardianEmail == request.auth.token.email
+        && resource.data.get('guardianUid', request.auth.uid) == request.auth.uid;
+      allow delete: if signedIn() && (resource.data.childUid == request.auth.uid || resource.data.get('guardianUid', '') == request.auth.uid);
     }
 
     match /teams/{t} {
       allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid
+        && consented()
         && !('deleting' in request.resource.data)
         && str(request.resource.data.teamName, 200) && request.resource.data.get('members', []).size() == 0;
       allow read: if isMember(t) || isProf(t);
@@ -110,6 +139,8 @@ service cloud.firestore {
         // 팀장 넘기기: 받는 사람은 이미 이 방의 팀원이어야 한다
         || (isOwner(t) && onlyKeys(['ownerUid'])
             && get(/databases/$(database)/documents/teams/$(t)/members/$(request.resource.data.ownerUid)).data.role == 'student')
+        // 예전 명단 배열은 roster로 옮긴 뒤 팀장이 비운다 (이메일·사진이 남지 않게)
+        || (isOwner(t) && onlyKeys(['members']) && request.resource.data.members.size() == 0)
         // 방 삭제 시작 (되돌리는 것도 가능)
         || (isOwner(t) && onlyKeys(['deleting']));
       allow delete: if isOwner(t);
@@ -150,10 +181,10 @@ service cloud.firestore {
         // 본인, 그리고 방 관리를 하는 팀장
         allow read: if signedIn() && (request.auth.uid == uid || isOwner(t));
         allow create: if signedIn() && request.auth.uid == uid
+          && consented()
           && request.resource.data.uid == uid
-          && request.resource.data.keys().hasOnly(['uid', 'role', 'memberId', 'code', 'joinedAt', 'name', 'email'])
+          && request.resource.data.keys().hasOnly(['uid', 'role', 'memberId', 'code', 'joinedAt', 'name'])
           && str(request.resource.data.get('name', ''), 100)
-          && request.resource.data.get('email', '') in ['', request.auth.token.get('email', '')]
           && (
             // 팀을 만든 사람 (팀 문서와 같은 배치로 생성)
             (request.resource.data.role == 'student' && getAfter(teamPath(t)).data.ownerUid == uid
@@ -167,6 +198,8 @@ service cloud.firestore {
         allow update: if signedIn() && request.auth.uid == uid
           && resource.data.memberId == null && onlyKeys(['memberId'])
           && ownsClaimAfter(t, request.resource.data.memberId);
+        // 예전에 저장한 내 이메일은 지울 수 있다
+        allow update: if signedIn() && request.auth.uid == uid && onlyKeys(['email']) && !('email' in request.resource.data);
         // 스스로 나가기 (팀장은 먼저 넘겨야 한다) / 팀장이 내보내기 / 방 삭제 중
         allow delete: if signedIn() && (
           (request.auth.uid == uid && !isOwner(t))
@@ -279,7 +312,7 @@ service cloud.firestore {
         match /peers/{uid} {
           allow read: if isMember(t);
           allow create, update: if isMember(t) && request.auth.uid == uid && str(request.resource.data.get('name', ''), 100);
-          allow delete: if canEraseCall(t, c);
+          allow delete: if (isMember(t) && request.auth.uid == uid) || canEraseCall(t, c);
         }
         // 연결 정보: 보낸 사람이 만들고, 받는 사람만 읽고 지운다. 못 받은 신호는 보낸 사람이 나갈 때 치운다
         match /signals/{s} {
@@ -309,11 +342,11 @@ service cloud.firestore {
       match /accessLogs/{id} {
         allow create: if signedIn() && request.resource.data.uid == request.auth.uid
           && id.matches('^' + request.auth.uid + '_[a-z-]{1,20}_[0-9]{8}$')
-          && request.resource.data.keys().hasOnly(['uid', 'email', 'what', 'at'])
-          && str(request.resource.data.get('what', ''), 40)
-          && request.resource.data.get('email', '') == request.auth.token.get('email', '');
-        allow read: if isOwner(t);
-        allow delete: if tearingDown(t);
+          && request.resource.data.keys().hasOnly(['uid', 'what', 'at'])
+          && str(request.resource.data.get('what', ''), 40);
+        allow read: if isOwner(t) || (signedIn() && resource.data.uid == request.auth.uid);
+        // 팀장은 30일 지난 기록을 지운다. 본인 기록은 본인이 지운다 (계정 삭제)
+        allow delete: if isOwner(t) || (signedIn() && resource.data.uid == request.auth.uid);
       }
     }
   }

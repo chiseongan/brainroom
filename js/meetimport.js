@@ -37,7 +37,7 @@ function guessMember(name) {
   if (!n) return '';
   const hit = state.members.find(m => {
     const mn = m.name.replace(/\s/g, '').toLowerCase();
-    return mn === n || n.includes(mn) || mn.includes(n) || (m.email && n.includes(m.email.split('@')[0].toLowerCase()));
+    return mn === n || n.includes(mn) || mn.includes(n);
   });
   return hit?.id || '';
 }

@@ -88,5 +88,5 @@ function hallHTML() {
     depthSorted(objects),
   ].join('');
 
-  return `<div class="hall">${isoSVG(HALL_W, HALL_D, HALL_H, scene)}</div>`;
+  return `<div class="hall">${isoSVG(HALL_W, HALL_D, HALL_H, scene, '', `${state.teamName} 회의실 그림: 팀원 ${state.members.length}명의 방으로 가는 문과 회의 테이블`)}</div>`;
 }

@@ -31,11 +31,16 @@ const record = (id, memberId, ownerUid, visibility, extra = {}) => ({
   id, memberId, ownerUid, visibility, type: 'memo', title: `기록 ${id}`, content: '내용', url: '', createdAt: 1, votes: [], table: null, ...extra,
 });
 
+const CONSENT = { version: 'test', at: 1, over14: true, terms: true, privacy: true };
+const consenting = ['uOwner', 'uAmy', 'uBen', 'uCara', 'uProf', 'uStranger', 'uOld', 'uLate', 'uNew', 'uNew2', 'uShort'];
+async function giveConsent(db) { for (const u of consenting) await setDoc(doc(db, `users/${u}`), { consent: CONSENT }); }
+
 // 규칙을 거치지 않고 기본 방을 채운다
 async function seed() {
   await env.clearFirestore();
   await env.withSecurityRulesDisabled(async ctx => {
     const db = ctx.firestore();
+    await giveConsent(db);
     const t = p => doc(db, `teams/${T}${p}`);
     await setDoc(doc(db, `teams/${T}`), { teamName: '호랑이양말', course: '소공', ownerUid: 'uOwner', members: ROSTER, decisionDismissed: [], links: {} });
     await setDoc(t('/secrets/student'), { code: 'student-code-123456' });
@@ -82,12 +87,15 @@ await deny('틀린 코드로 참여 불가', setDoc(p(stranger(), '/members/uStr
 await deny('팀원 코드로 교수자가 될 수 없다', setDoc(p(stranger(), '/members/uStranger'), { uid: 'uStranger', role: 'prof', memberId: null, code: 'student-code-123456', joinedAt: 1 }));
 await deny('참여하면서 팀원 이름을 바로 고를 수 없다', setDoc(p(stranger(), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: 'mA', code: 'student-code-123456', joinedAt: 1 }));
 await deny('다른 사람의 역할 문서를 만들 수 없다', setDoc(p(stranger(), '/members/uOther'), { uid: 'uOther', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1 }));
-await deny('역할 문서의 이메일을 속일 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1, name: '신입', email: 'prof@x.com' }));
-await allow('올바른 코드로 참여', setDoc(p(as('uStranger', 's@x.com'), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1, name: '신입', email: 's@x.com' }));
+await deny('역할 문서에 이메일을 저장하지 않는다', setDoc(p(as('uStranger', 's@x.com'), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1, name: '신입', email: 's@x.com' }));
+await allow('올바른 코드로 참여', setDoc(p(as('uStranger', 's@x.com'), '/members/uStranger'), { uid: 'uStranger', role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1, name: '신입' }));
 await deny('팀원은 교수자 코드를 읽을 수 없다', getDoc(p(amy(), '/secrets/prof')));
 await deny('교수자는 팀원 코드를 읽을 수 없다', getDoc(p(prof(), '/secrets/student')));
 await allow('팀원은 팀원 코드를 읽는다', getDoc(p(amy(), '/secrets/student')));
 await allow('팀장은 교수자 코드를 읽는다', getDoc(p(owner(), '/secrets/prof')));
+await env.withSecurityRulesDisabled(async ctx => { await updateDoc(doc(ctx.firestore(), `teams/${T}/members/uBen`), { email: 'old@x.com' }); });
+await deny('이메일을 지우며 역할을 바꿀 수 없다', updateDoc(p(ben(), '/members/uBen'), { role: 'prof' }));
+await allow('예전에 저장된 내 이메일을 지운다', setDoc(p(ben(), '/members/uBen'), { uid: 'uBen', role: 'student', memberId: 'mB', code: 'x', joinedAt: 1 }));
 await deny('자기 역할을 바꿀 수 없다', updateDoc(p(prof(), '/members/uProf'), { role: 'student' }));
 
 // ---------- 팀원 행세 차단 (이번에 막은 구멍) ----------
@@ -178,7 +186,9 @@ await deny('예전 명단 배열을 고칠 수 없다', updateDoc(doc(ben(), tea
 await deny('연동 대상은 팀원이 못 바꾼다 (피해자 토큰으로 비공개 저장소를 읽히는 공격)', updateDoc(doc(ben(), team()), { links: { github: 'victim/private-repo' } }));
 await allow('연동 대상은 팀장이 정한다', updateDoc(doc(owner(), team()), { links: { github: 'team/repo' } }));
 await allow('방 이름은 팀원도 바꾼다', updateDoc(doc(ben(), team()), { teamName: '새 이름' }));
-await deny('팀장도 예전 명단 배열은 못 고친다', updateDoc(doc(owner(), team()), { members: [] }));
+await deny('팀장도 예전 명단 배열을 고쳐 쓸 수는 없다', updateDoc(doc(owner(), team()), { members: ROSTER.slice(0, 1) }));
+await deny('팀원은 명단 배열을 비울 수 없다', updateDoc(doc(ben(), team()), { members: [] }));
+await allow('옮긴 뒤 팀장은 명단 배열을 비운다', updateDoc(doc(owner(), team()), { members: [] }));
 await deny('명단 배열이 찬 방을 새로 만들 수 없다', setDoc(doc(as('uNew2'), 'teams/N9'), { teamName: 'x', ownerUid: 'uNew2', members: [entry('a', { color: '"><img>' })] }));
 await env.withSecurityRulesDisabled(async ctx => {
   for (const m of ROSTER) await setDoc(doc(ctx.firestore(), `teams/${T}/roster/${m.id}`), m);
@@ -191,14 +201,15 @@ await deny('낯선 사람은 명단을 못 읽는다', getDocs(collection(strang
 await deny('다른 팀원 이름을 바꿀 수 없다', setDoc(p(ben(), '/roster/mA'), { ...ROSTER[1], name: '가짜' }));
 await deny('다른 팀원 칸을 지울 수 없다', deleteDoc(p(ben(), '/roster/mA')));
 await deny('내 칸에 공격 문자열 색을 넣을 수 없다', setDoc(p(ben(), '/roster/mB'), mine({ color: 'red;"><img src=x>' })));
-await deny('내 칸에 낯선 사진 주소를 넣을 수 없다', setDoc(p(ben(), '/roster/mB'), mine({ photo: 'https://evil.example/track.png' })));
+await deny('명단에 사진 주소를 저장하지 않는다', setDoc(p(ben(), '/roster/mB'), mine({ photo: 'https://lh3.googleusercontent.com/a/x' })));
+await deny('명단에 이메일을 저장하지 않는다', setDoc(p(ben(), '/roster/mB'), mine({ email: 'b@x.com' })));
 await deny('내 칸의 계정을 남으로 바꿀 수 없다', setDoc(p(ben(), '/roster/mB'), mine({ uid: 'uAmy' })));
 await deny('칸 안의 id를 바꿀 수 없다', setDoc(p(ben(), '/roster/mB'), mine({ id: 'mA' })));
 await deny('새 칸을 남의 계정으로 만들 수 없다', setDoc(p(ben(), '/roster/mNew'), entry('mNew', { uid: 'uAmy' })));
 await deny('칸 id에 이상한 글자를 넣을 수 없다', setDoc(p(ben(), `/roster/${encodeURIComponent('"><img>')}`), entry('"><img>')));
 await deny('주인이 있는 칸을 가로채 새로 만들 수 없다 (옮기기 전 칸)', setDoc(p(ben(), '/roster/mC'), entry('mC')));
 await deny('교수자는 명단을 못 쓴다', setDoc(p(prof(), '/roster/mNew'), entry('mNew')));
-await allow('내 칸은 고칠 수 있다', setDoc(p(ben(), '/roster/mB'), mine({ name: '벤2', connections: { github: 'ok' }, photo: 'https://lh3.googleusercontent.com/a/x=s96' })));
+await allow('내 칸은 고칠 수 있다', setDoc(p(ben(), '/roster/mB'), mine({ name: '벤2', connections: { github: 'ok' } })));
 await allow('내 칸을 연결 해제할 수 있다', setDoc(p(ben(), '/roster/mB'), { id: 'mB', name: '벤', color: '#333333' }));
 await allow('새 팀원 칸을 더할 수 있다', setDoc(p(cara(), '/roster/mNew'), entry('mNew')));
 await allow('주인인 칸을 옮겨 만들 수 있다', setDoc(p(cara(), '/roster/mC'), entry('mC', { uid: 'uCara' })));
@@ -328,6 +339,7 @@ await deny('삭제 중에도 팀원은 남의 기록을 못 지운다', deleteDo
 
 // ---------- 새 방 만들기 ----------
 await env.clearFirestore();
+await env.withSecurityRulesDisabled(async ctx => giveConsent(ctx.firestore()));
 {
   const o = as('uNew');
   const b = writeBatch(o);
@@ -352,14 +364,57 @@ await env.clearFirestore();
 
 // ---------- 접근 기록 ----------
 await seed();
-await allow('거절된 접근 기록 남기기', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_join_20261105'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 1 }));
-await deny('같은 날 같은 기록을 쏟아낼 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_join_20261105'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 2 }));
-await deny('임의의 id로 쏟아낼 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/a9'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 1 }));
-await deny('남의 이름 id로 쓸 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uAmy_join_20261105'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 1 }));
-await deny('접근 기록의 이메일을 속일 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_open_20261105'), { uid: 'uStranger', email: 'prof@x.com', what: 'join', at: 1 }));
-await deny('접근 기록에 다른 칸을 넣을 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_view_20261105'), { uid: 'uStranger', email: 's@x.com', what: 'x', at: 1, blob: 'y' }));
+await allow('거절된 접근 기록 남기기', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_join_20261105'), { uid: 'uStranger', what: 'join', at: 1 }));
+await deny('같은 날 같은 기록을 쏟아낼 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_join_20261105'), { uid: 'uStranger', what: 'join', at: 2 }));
+await deny('임의의 id로 쏟아낼 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/a9'), { uid: 'uStranger', what: 'join', at: 1 }));
+await deny('남의 이름 id로 쓸 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uAmy_join_20261105'), { uid: 'uStranger', what: 'join', at: 1 }));
+await deny('접근 기록에 이메일을 저장하지 않는다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_open_20261105'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 1 }));
+await deny('접근 기록에 다른 칸을 넣을 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_view_20261105'), { uid: 'uStranger', what: 'x', at: 1, blob: 'y' }));
+await allow('내 접근 기록은 지울 수 있다', deleteDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_join_20261105')));
 await deny('팀원은 접근 기록을 못 읽는다', getDocs(collection(amy(), `teams/${T}/accessLogs`)));
 await allow('팀장은 접근 기록을 읽는다', getDocs(collection(owner(), `teams/${T}/accessLogs`)));
+
+// ---------- 동의와 보호자 동의 ----------
+await env.clearFirestore();
+await env.withSecurityRulesDisabled(async ctx => {
+  const db = ctx.firestore();
+  await setDoc(doc(db, 'teams/R'), { teamName: 'r', ownerUid: 'uOwner', members: [] });
+  await setDoc(doc(db, 'teams/R/secrets/student'), { code: 'student-code-123456' });
+});
+const joinR = uid => setDoc(doc(as(uid), `teams/R/members/${uid}`), { uid, role: 'student', memberId: null, code: 'student-code-123456', joinedAt: 1 });
+const newRoom = (uid, id) => setDoc(doc(as(uid), `teams/${id}`), { teamName: 'x', ownerUid: uid, members: [] });
+await deny('동의 전에는 방에 들어갈 수 없다', joinR('kNo'));
+await deny('동의 전에는 방을 만들 수 없다', newRoom('kNo', 'Z1'));
+await allow('동의 기록 남기기 (만 14세 이상)', setDoc(doc(as('kAdult'), 'users/kAdult'), { consent: CONSENT }));
+await allow('동의 후 방 참여', joinR('kAdult'));
+await allow('필수 동의가 빠진 기록', setDoc(doc(as('kHalf'), 'users/kHalf'), { consent: { ...CONSENT, privacy: false } }));
+await deny('필수 동의가 빠지면 방에 못 들어감', joinR('kHalf'));
+
+const TOKEN = 'guardian-token-1234567890';
+const kid = () => as('kKid');
+await allow('아이가 보호자 요청 만들기', setDoc(doc(kid(), `guardianRequests/${TOKEN}`), { childUid: 'kKid', status: 'pending', createdAt: 1, version: 'test' }));
+await deny('요청을 처음부터 승인 상태로 만들 수 없다', setDoc(doc(kid(), 'guardianRequests/guardian-token-self-approve'), { childUid: 'kKid', status: 'approved', createdAt: 1, version: 'test' }));
+await deny('다른 아이 이름으로 요청을 만들 수 없다', setDoc(doc(as('kOther'), 'guardianRequests/guardian-token-other-child'), { childUid: 'kKid', status: 'pending', createdAt: 1, version: 'test' }));
+await deny('짧은 토큰은 거절', setDoc(doc(kid(), 'guardianRequests/short'), { childUid: 'kKid', status: 'pending', createdAt: 1, version: 'test' }));
+await allow('만 14세 미만으로 동의 기록', setDoc(doc(kid(), 'users/kKid'), { consent: { ...CONSENT, over14: false, guardianToken: TOKEN } }));
+await deny('보호자 승인 전에는 방에 못 들어감', joinR('kKid'));
+await deny('보호자 승인 전에는 방을 못 만듦', newRoom('kKid', 'Z2'));
+await deny('혼자 만 14세 이상으로 바꿀 수 없다', updateDoc(doc(kid(), 'users/kKid'), { 'consent.over14': true }));
+await deny('아이가 스스로 승인할 수 없다', updateDoc(doc(kid(), `guardianRequests/${TOKEN}`), { status: 'approved', guardianUid: 'kKid', guardianEmail: 'k@x.com', decidedAt: 1 }));
+const guardian = () => as('gMom', 'mom@x.com');
+await deny('보호자 칸에 남의 계정을 쓸 수 없다', updateDoc(doc(guardian(), `guardianRequests/${TOKEN}`), { status: 'approved', guardianUid: 'gDad', guardianEmail: 'mom@x.com', decidedAt: 1 }));
+await deny('보호자 이메일을 속일 수 없다', updateDoc(doc(guardian(), `guardianRequests/${TOKEN}`), { status: 'approved', guardianUid: 'gMom', guardianEmail: 'fake@x.com', decidedAt: 1 }));
+await deny('요청 내용(아이)을 바꿀 수 없다', updateDoc(doc(guardian(), `guardianRequests/${TOKEN}`), { childUid: 'kOther', status: 'approved', guardianUid: 'gMom', guardianEmail: 'mom@x.com', decidedAt: 1 }));
+await deny('요청 목록은 볼 수 없다', getDocs(collection(guardian(), 'guardianRequests')));
+await allow('링크를 아는 보호자는 요청을 읽는다', getDoc(doc(guardian(), `guardianRequests/${TOKEN}`)));
+await allow('보호자 승인', updateDoc(doc(guardian(), `guardianRequests/${TOKEN}`), { status: 'approved', guardianUid: 'gMom', guardianEmail: 'mom@x.com', decidedAt: 1 }));
+await allow('승인 후 방 참여', joinR('kKid'));
+await deny('다른 사람이 보호자 결정을 뒤집을 수 없다', updateDoc(doc(as('gStranger', 's@x.com'), `guardianRequests/${TOKEN}`), { status: 'rejected', guardianUid: 'gStranger', guardianEmail: 's@x.com', decidedAt: 2 }));
+await allow('보호자는 철회할 수 있다', updateDoc(doc(guardian(), `guardianRequests/${TOKEN}`), { status: 'revoked', guardianUid: 'gMom', guardianEmail: 'mom@x.com', decidedAt: 2 }));
+await deny('철회 후에는 새 방에 못 들어감', newRoom('kKid', 'Z3'));
+await allow('아이는 계정을 지우며 요청을 지운다', deleteDoc(doc(kid(), `guardianRequests/${TOKEN}`)));
+await allow('내 계정 문서를 지운다', deleteDoc(doc(kid(), 'users/kKid')));
+await deny('남의 계정 문서는 못 지운다', deleteDoc(doc(as('kOther'), 'users/kAdult')));
 
 await quiet(() => env.cleanup());
 console.log(`\n규칙 시험: ${pass}개 통과, ${fail}개 실패`);

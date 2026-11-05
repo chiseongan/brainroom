@@ -7,7 +7,8 @@ let proxyConfigCache = null;
 let proxyLimitNoticeAt = 0;
 
 function aiSwitchOn() {
-  try { return localStorage.getItem(AI_OFF_KEY) !== '1'; } catch (e) { return true; }
+  // 내용이 외부(Anthropic)로 나가므로 직접 켜야 동작한다
+  try { return localStorage.getItem(AI_OFF_KEY) === '0'; } catch (e) { return false; }
 }
 
 function setAiSwitch(on) {

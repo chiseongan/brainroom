@@ -5,7 +5,6 @@
 
 const SAFE_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
 const SAFE_COLOR = /^#[0-9a-fA-F]{6}$/;
-const SAFE_PHOTO = /^https:\/\/[a-z0-9-]+\.googleusercontent\.com\/[^\s"'<>]*$/;
 
 // 앱 곳곳에서 쓴다
 const isId = v => typeof v === 'string' && SAFE_ID.test(v);
@@ -36,10 +35,10 @@ function cleanMember(raw, index = 0) {
   const m = { ...raw };
   m.name = asStr(m.name).slice(0, 100) || '팀원';
   if (!SAFE_COLOR.test(asStr(m.color))) m.color = typeof MEMBER_COLORS !== 'undefined' ? MEMBER_COLORS[index % MEMBER_COLORS.length] : '#6366f1';
-  fix(m, 'email', isStr, '');
+  delete m.email; // 명단에 두지 않는다 (예전에 저장된 값도 쓰지 않는다)
+  delete m.photo;
   fix(m, 'uid', isId, undefined);
   if (m.uid === undefined) delete m.uid;
-  if (m.photo && !SAFE_PHOTO.test(asStr(m.photo))) delete m.photo;
   fix(m, 'pinnedIdeaId', isIdOrNull, null);
   if (m.connections) {
     const c = {};

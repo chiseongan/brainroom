@@ -80,7 +80,7 @@ Google 로그인 설정을 마친 뒤 이어서 하면, 팀원끼리 실시간�
 
 ## Chrome 확장: AI 대화 담기 (`extension/`)
 ChatGPT·Claude·Gemini 화면 오른쪽 아래 **🧠 BrainRoom에 담기** 버튼(또는 오른쪽 클릭 메뉴)으로 지금 보고 있는 대화를 BrainRoom으로 보냅니다. 글을 드래그해 선택한 상태면 그 부분만 보냅니다.
-- 서버로 보내지 않고 **열려 있는 BrainRoom 탭으로만** 전달합니다. 탭이 없으면 새로 엽니다.
+- **열려 있는 BrainRoom 탭으로만** 전달합니다(탭이 없으면 새로 엽니다). 고른 것만 BrainRoom에 저장됩니다.
 - BrainRoom에서는 **AI 대화 불러오기 창**이 떠서 고른 대화만 저장합니다(개인정보 가리기·공유 범위 그대로). 원래 대화 주소가 근거 링크로 남습니다.
 - 각 사이트의 화면 구조를 읽는 방식이라 사이트가 화면을 바꾸면 못 읽을 수 있습니다. 그때는 글을 선택해서 보내거나 내보내기 파일을 쓰세요.
 
@@ -134,6 +134,9 @@ js/firebase-config.js  Firebase 웹 앱 설정값 (직접 입력)
 js/auth.js     Google 로그인 (Firebase Authentication)
 js/guard.js    다른 사이트의 iframe 삽입 차단
 js/sanitize.js  밖에서 온 데이터 정화 (Firestore 문서, 불러온 파일)
+js/legal.js    동의·나이 확인·보호자 동의·내 데이터 내려받기·계정 삭제 (운영자 정보는 js/legal-config.js)
+js/a11y.js     키보드 조작, 창 초점
+legal/         개인정보처리방침, 이용약관, 쿠키 안내, 오픈소스 고지
 js/store.js    상태 관리, localStorage 저장, 샘플 데이터
 js/trace.js    공유 범위, 개인정보 가리기, AI 대화 파싱·분류, 결정 추출, 퀘스트, 보정 요청, 교수자 집계
 js/views.js    타임라인, 결정, 리포트, 퀘스트, AI 대화 불러오기, 교수자 보기 화면

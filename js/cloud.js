@@ -6,7 +6,7 @@
 //   teams/{teamId}                  { teamName, course, ownerUid, decisionDismissed[], links } (예전 방은 members[]도)
 //   teams/{teamId}/roster/{memberId} { id, name, color, uid, ... }  명단 한 칸 (팀원은 내 칸만, 팀장은 모두)
 //   teams/{teamId}/secrets/{kind}   { code, expiresAt }  student = 팀원 초대 코드, prof = 교수자 초대 코드 (팀장만 읽음)
-//   teams/{teamId}/members/{uid}    { uid, role, memberId, code, name, email }  역할 문서 (본인과 팀장만 읽음)
+//   teams/{teamId}/members/{uid}    { uid, role, memberId, code, name }  역할 문서 (본인과 팀장만 읽음)
 //   teams/{teamId}/claims/{memberId} { uid, at }  명단의 팀원 한 명 = 계정 하나 (먼저 만든 계정이 그 팀원)
 //   teams/{teamId}/items/{id}       기록 내용 (공유 범위에 따라 읽기 제한)
 //   teams/{teamId}/itemMeta/{id}    { memberId, ownerUid, type, createdAt, visibility, purpose }  횟수·목적 집계용
@@ -107,12 +107,15 @@ async function cloudOnAuth() {
   render();
   try {
     initDb();
+    if (guardianTokenInUrl()) { cloud.busy = false; return render(); } // 보호자는 아이의 요청에만 답한다
+    await loadConsent();
+    if (!consentOk()) { cloud.busy = false; return render(); } // 동의 전에는 방에 들어가지 않는다 (초대 링크는 주소에 남아 있다)
     const params = new URLSearchParams(location.search);
     let joined = null;
     if (params.get('team')) {
       // 링크를 여는 것만으로 낯선 방에 들어가지 않게 묻는다 (참여하면 팀장에게 내 이름·이메일이 보인다)
       const already = await teamRef(params.get('team')).collection('members').doc(authUser.uid).get().then(s => s.exists).catch(() => false);
-      if (isId(params.get('team')) && (already || confirm(`초대 링크로 ${params.get('as') === 'prof' ? '교수자로 ' : ''}방에 참여할까요?\n\n참여하면 방 사람들에게 내 이름과 이메일(${authUser.email})이 보여요. 모르는 사람이 보낸 링크라면 취소하세요.`))) {
+      if (isId(params.get('team')) && (already || confirm(`초대 링크로 ${params.get('as') === 'prof' ? '교수자로 ' : ''}방에 참여할까요?\n\n참여하면 방 사람들에게 내 이름이 보여요. 모르는 사람이 보낸 링크라면 취소하세요.`))) {
         joined = await cloudJoin(params.get('team'), params.get('code') || '', params.get('as') === 'prof' ? 'prof' : 'student');
       }
       history.replaceState(null, '', location.pathname);
@@ -153,7 +156,7 @@ async function cloudJoin(teamId, code, role) {
     const mine = await memRef.get();
     if (!mine.exists) {
       if (!code) throw Object.assign(new Error('no code'), { code: 'permission-denied' });
-      await memRef.set({ uid: authUser.uid, role, memberId: null, code, joinedAt: Date.now(), name: authUser.name || '', email: authUser.email || '' });
+      await memRef.set({ uid: authUser.uid, role, memberId: null, code, joinedAt: Date.now(), name: authUser.name || '' });
     }
     const actualRole = mine.exists ? mine.data().role : role;
     const team = await teamRef(teamId).get();
@@ -173,7 +176,7 @@ function logDenied(teamId, what) {
   if (!isId(teamId)) return;
   const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   db.collection('teams').doc(teamId).collection('accessLogs').doc(`${authUser.uid}_${what}_${day}`)
-    .set({ uid: authUser.uid, email: authUser.email, what, at: Date.now() })
+    .set({ uid: authUser.uid, what, at: Date.now() })
     .catch(e => console.warn('접근 기록을 남기지 못했어요', e)); // 기록 실패가 사용자를 막지는 않는다
 }
 
@@ -209,6 +212,7 @@ function cloudOpenTeam(teamId) {
   cloud.roleDoc = null;
   cloud.claimChecked = false;
   cloud.rosterMoved = false;
+  cloud.rosterReady = false;
   cloud.settingMember = false;
   cloud.closing = false;
 
@@ -232,7 +236,7 @@ function cloudOpenTeam(teamId) {
     if (!snap.exists) return fail({ code: 'not-found' });
     if (snap.data().deleting && snap.data().ownerUid !== authUser.uid) return fail({ code: 'not-found' }); // 팀장이 삭제하는 중
     cloud.docs.team = cleanTeam(snap.data());
-    cloud.loaded = true;
+    cloud.loaded = cloud.rosterReady; // 명단까지 받아야 방을 연다 (빈 명단으로 '누구의 방' 화면이 뜨지 않게)
     rebuildState();
   }, fail));
   // 받은 문서는 바로 정화한다. 형식이 잘못된 문서는 없는 것으로 본다 (js/sanitize.js)
@@ -240,6 +244,10 @@ function cloudOpenTeam(teamId) {
   const cleanDocs = (snap, fn) => new Map(snap.docs.map(d => [d.id, fn(d.data(), d.id)]).filter(([, v]) => v));
   const listen = (query, key) => cloud.unsubs.push(query.onSnapshot(snap => {
     cloud.docs[key] = cleanDocs(snap, cleanOf[key]);
+    if (key === 'roster') {
+      cloud.rosterReady = true;
+      if (cloud.docs.team) cloud.loaded = true;
+    }
     rebuildState();
   }, fail));
   // 공유 범위별로 나눠 듣는다: 남의 '나만' 기록은 규칙상 읽을 수 없어서, 한 번에 전부 읽는 쿼리는 거절된다
@@ -329,10 +337,12 @@ function migrateRoster() {
   if (!legacy.length || cloud.rosterMoved || !cloud.roleDoc?.memberId) return;
   cloud.rosterMoved = true;
   const t = teamRef();
-  legacy.forEach(m => {
-    if (d.roster.has(m.id) || !(cloud.owner || m.id === cloud.roleDoc.memberId)) return;
-    t.collection('roster').doc(m.id).set(m).catch(e => console.warn('명단 옮기기 실패', e));
+  const moves = legacy.map((m, i) => {
+    if (d.roster.has(m.id) || !(cloud.owner || m.id === cloud.roleDoc.memberId)) return null;
+    return t.collection('roster').doc(m.id).set({ ...m, at: i });
   });
+  // 팀장이 모두 옮겼으면 배열을 비운다 (배열에 예전 이메일·사진이 남아 있다)
+  Promise.all(moves).then(() => (cloud.owner ? t.update({ members: [] }) : null)).catch(e => console.warn('명단 옮기기 실패', e));
 }
 
 // 스냅샷들을 앱이 쓰는 state 하나로 합친다
@@ -515,8 +525,8 @@ async function cloudCreateTeamFrom(src) {
   initDb();
   const ws = migrate(JSON.parse(JSON.stringify(src)));
   const me = ws.members.find(m => m.uid === authUser.uid) || ws.members.find(m => m.id === ws.meId) || ws.members[0];
-  ws.members.forEach(m => { delete m.uid; delete m.email; delete m.photo; });
-  Object.assign(me, { uid: authUser.uid, email: authUser.email, photo: authUser.photo });
+  ws.members.forEach(m => { delete m.uid; });
+  me.uid = authUser.uid;
 
   cloudClose();
   cloud.showSetup = false;
@@ -529,7 +539,7 @@ async function cloudCreateTeamFrom(src) {
     head.set(ref, { ...teamFields(ws), members: [], ownerUid: authUser.uid, createdAt: Date.now() });
     head.set(ref.collection('secrets').doc('student'), newInvite());
     head.set(ref.collection('secrets').doc('prof'), newInvite());
-    head.set(ref.collection('members').doc(authUser.uid), { uid: authUser.uid, role: 'student', memberId: me.id, code: '', joinedAt: Date.now(), name: authUser.name || '', email: authUser.email || '' });
+    head.set(ref.collection('members').doc(authUser.uid), { uid: authUser.uid, role: 'student', memberId: me.id, code: '', joinedAt: Date.now(), name: authUser.name || '' });
     head.set(ref.collection('claims').doc(me.id), { uid: authUser.uid, at: Date.now() });
     await head.commit();
 
@@ -584,7 +594,7 @@ async function cloudLeaveTeam(eraseMine = false) {
     await quiesceCloud();
     if (eraseMine) await eraseMyRecords(t);
     if (mine) {
-      delete mine.uid; delete mine.email; delete mine.photo;
+      delete mine.uid;
       await t.collection('roster').doc(mine.id).set(mine); // 명단에서 내 연결 풀기 (팀원일 때 해야 함)
     }
     const batch = db.batch();
@@ -656,8 +666,17 @@ function ensureMyClaim() {
   if (!memberId || cloud.claimChecked) return;
   cloud.claimChecked = true;
   const ref = teamRef().collection('claims').doc(memberId);
+  const entry = teamRef().collection('roster').doc(memberId);
   ref.get().then(snap => {
     if (!snap.exists) return ref.set({ uid: authUser.uid, at: Date.now() });
+  }).then(() => entry.get()).then(snap => {
+    // 예전에 저장한 내 이메일·사진은 지운다 (필요 없는 개인정보)
+    if (cloud.roleDoc?.email) teamRef().collection('members').doc(authUser.uid).update({ email: firebase.firestore.FieldValue.delete() }).catch(() => {});
+    const old = snap.exists ? snap.data() : null;
+    if (old && ('email' in old || 'photo' in old)) {
+      const { email: _e, photo: _p, ...rest } = old;
+      return entry.set(rest);
+    }
   }).catch(() => { /* 예전 규칙이면 조용히 건너뜀 */ });
 }
 
@@ -682,8 +701,11 @@ async function openManageModal() {
       teamRef().collection('members').get(),
       teamRef().collection('accessLogs').get().catch(() => ({ docs: [] })),
     ]);
-    roles = r.docs.map(d => ({ ...d.data(), uid: d.id, role: d.data().role === 'prof' ? 'prof' : 'student', name: asStr(d.data().name), email: asStr(d.data().email) })).filter(x => isId(x.uid));
-    logs = l.docs.map(d => ({ uid: asStr(d.data().uid), email: asStr(d.data().email), what: asStr(d.data().what), at: finite(d.data().at) })).sort((a, b) => b.at - a.at).slice(0, 20);
+    roles = r.docs.map(d => ({ ...d.data(), uid: d.id, role: d.data().role === 'prof' ? 'prof' : 'student', name: asStr(d.data().name) })).filter(x => isId(x.uid));
+    // 막힌 접근 기록은 30일만 둔다
+    const old = l.docs.filter(d => Date.now() - finite(d.data().at) > 30 * 864e5);
+    if (old.length) deleteDocs(old).catch(() => {});
+    logs = l.docs.filter(d => !old.includes(d)).map(d => ({ uid: asStr(d.data().uid), what: asStr(d.data().what), at: finite(d.data().at) })).sort((a, b) => b.at - a.at).slice(0, 20);
   } catch (e) {
     closeModal();
     return writeFailed(e, '방 관리');
@@ -692,7 +714,7 @@ async function openManageModal() {
   const rows = roles.sort((a, b) => (a.role === b.role ? 0 : a.role === 'student' ? -1 : 1)).map(r => {
     const self = r.uid === authUser.uid;
     return `<li class="manage-row">
-      <span><b>${esc(nameOf(r))}</b>${r.email ? ` <span class="muted sm">${esc(r.email)}</span>` : ''}
+      <span><b>${esc(nameOf(r))}</b>
         <span class="vis-badge ${r.role === 'prof' ? 'vis-prof' : 'vis-team'}">${self ? '팀장 (나)' : r.role === 'prof' ? '교수자' : '팀원'}</span></span>
       ${self ? '' : `<span class="manage-actions">
         ${r.role === 'student' ? `<button class="btn sm" data-cloud="owner:${esc(r.uid)}">팀장 넘기기</button>` : ''}
@@ -713,7 +735,7 @@ async function openManageModal() {
       <button class="btn sm" data-cloud="rotate:prof">교수자 링크 다시 발급</button>
     </div>
     <h3>막힌 접근 기록 <span class="muted sm">${logs.length}건</span></h3>
-    ${logs.length ? `<ul class="manage-log">${logs.map(l => `<li class="sm">${fmtDate(l.at)} · ${esc(l.email || l.uid.slice(0, 6))} · ${esc(l.what)}</li>`).join('')}</ul>` : '<p class="muted sm">아직 없어요.</p>'}
+    ${logs.length ? `<ul class="manage-log">${logs.map(l => `<li class="sm">${fmtDate(l.at)} · 계정 ${esc(l.uid.slice(0, 6))}… · ${esc(l.what)}</li>`).join('')}</ul>` : '<p class="muted sm">아직 없어요.</p>'}
     <h3>방 삭제</h3>
     <p class="muted sm">기록, 회의 녹취, 초대 링크가 모두 지워지고 되돌릴 수 없어요. 필요하면 먼저 ⚙️ 메뉴에서 전체 백업을 받으세요.</p>
     ${deleting ? '<p class="notice sm">⚠️ 삭제가 끝나지 않았어요. 이어서 삭제하거나 취소할 수 있어요.</p>' : ''}
@@ -746,7 +768,7 @@ async function cloudKick(uid) {
     if (role.data()?.memberId) batch.delete(t.collection('claims').doc(role.data().memberId));
     await batch.commit();
     const m = state.members.find(x => x.uid === uid);
-    if (m) { delete m.uid; delete m.email; delete m.photo; saveState(); } // 명단 칸은 남아 기록이 이어지고, 다시 고를 수 있다
+    if (m) { delete m.uid; saveState(); } // 명단 칸은 남아 기록이 이어지고, 다시 고를 수 있다
     toast('내보냈어요');
   } catch (e) {
     writeFailed(e, '내보내기');
@@ -775,10 +797,28 @@ async function cloudTransferOwner(uid) {
 // 중간에 끊겨도 다시 누르면 남은 것부터 이어서 지운다
 async function cloudDeleteTeam() {
   const id = cloud.teamId;
+  try {
+    await quiesceCloud();
+    await teardownTeam(id);
+    toast('방을 삭제했어요');
+  } catch (e) {
+    writeFailed(e, `방 삭제(${e.step || '시작'})`);
+    toast('방을 다 지우지 못했어요. 다시 열어 👥 방 관리에서 이어서 삭제할 수 있어요');
+  }
+  cloud.teamId = null;
+  cloud.loaded = false;
+  cloudClose();
+  state = null;
+  cloud.showSetup = true;
+  cloud.setupMode = null;
+  savePrefs({ lastTeam: null });
+  render();
+}
+
+async function teardownTeam(id) {
   const t = teamRef(id);
   let step = '시작'; // 실패하면 어느 단계인지 남긴다
   try {
-    await quiesceCloud();
     await t.update({ deleting: true });
     step = '회의';
     const calls = await t.collection('calls').get();
@@ -804,19 +844,10 @@ async function cloudDeleteTeam() {
     step = '내 방 목록';
     delete cloud.myTeams[id];
     await userRef().update({ [`teams.${id}`]: firebase.firestore.FieldValue.delete() });
-    toast('방을 삭제했어요');
   } catch (e) {
-    writeFailed(e, `방 삭제(${step})`);
-    toast('방을 다 지우지 못했어요. 다시 열어 👥 방 관리에서 이어서 삭제할 수 있어요');
+    e.step = step;
+    throw e;
   }
-  cloud.teamId = null;
-  cloud.loaded = false;
-  cloudClose();
-  state = null;
-  cloud.showSetup = true;
-  cloud.setupMode = null;
-  savePrefs({ lastTeam: null });
-  render();
 }
 
 // ---------- 교수자 보기 ----------
@@ -883,6 +914,8 @@ function cloudMenuHTML() {
         <button class="btn" data-cloud="new:join">🔑 다른 방 참여하기</button>
         ${cloudOn() && cloud.owner ? '<button class="btn" data-cloud="manage">👥 방 관리 <small class="muted">(참여자·초대 링크·방 삭제)</small></button>' : ''}
         ${cloudOn() ? '<button class="btn danger" data-cloud="leave">🚪 이 방에서 나가기</button>' : ''}
+        <button class="btn" id="downloadMyData">📦 내 데이터 내려받기</button>
+        <button class="btn danger" id="deleteAccountBtn">🗑️ 계정과 데이터 삭제 <small>(동의 철회)</small></button>
         <button class="btn ghost" data-cloud="local">💻 이 기기 데모로 열기</button>
       </div>
       ${cloudOn() ? inviteSectionHTML() : ''}

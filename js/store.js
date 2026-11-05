@@ -83,8 +83,6 @@ function memberByUid(uid) {
 function claimMember(memberId, user) {
   const m = member(memberId);
   m.uid = user.uid;
-  m.email = user.email;
-  m.photo = user.photo;
   state.meId = m.id;
   saveState();
   return m;
@@ -211,27 +209,27 @@ function sampleWorkspace() {
     });
   };
 
-  add(jimin, 'link', '배달 포장재 쓰레기 통계', '배달 음식 포장재가 생활 플라스틱 쓰레기의 큰 비중을 차지한다는 기사. 재활용률은 생각보다 낮음.', 'https://example.com/packaging-waste', 30);
+  add(jimin, 'link', '배달 포장재 쓰레기 통계', '(샘플) 배달 음식 포장재와 플라스틱 쓰레기를 다룬 기사를 모았다는 가정의 메모.', 'https://example.com/packaging-waste', 30);
   add(jimin, 'link', '제로웨이스트 가게 사례 모음', '리필 스테이션, 다회용기 대여 서비스 사례. 대학가 카페와 협업한 사례도 있음.', 'https://example.com/zero-waste', 20);
   add(jimin, 'link', '탄소 발자국 계산 방식', '일상 소비가 만드는 탄소 배출량을 계산하는 방법 정리.', 'https://example.com/carbon', 18);
   add(jimin, 'memo', '다회용기 반납을 게임처럼?', '반납할 때마다 포인트, 레벨업 하면 카페 할인. 게이미피케이션 적용해보기.', '', 6);
   const ecoIdea = add(jimin, 'idea', '캠퍼스 다회용기 순환 서비스', '학교 식당·카페 배달에 다회용기를 쓰고 캠퍼스 반납함에서 회수. 플라스틱 쓰레기 절감.', '', 3);
 
-  add(seojun, 'link', '1인가구 식비 지출 조사', '대학생 자취생의 배달 음식 의존도가 높고 식비가 소비의 큰 부분. 음식물 쓰레기 처리도 고민.', 'https://example.com/single-household', 26);
+  add(seojun, 'link', '1인가구 식비 지출 조사', '(샘플) 자취생의 배달 음식과 식비, 음식물 쓰레기를 다룬 자료를 모았다는 가정의 메모.', 'https://example.com/single-household', 26);
   add(seojun, 'link', '밀키트 구독 서비스 비교', '1인분 밀키트 구독 가격과 구성 비교. 자취생에게는 아직 비쌈.', 'https://example.com/mealkit', 22);
   add(seojun, 'memo', '자취생 공동구매', '재료를 조금만 사고 싶은데 대용량만 있음 → 원룸 이웃끼리 공동구매 모임?', '', 10);
   add(seojun, 'memo', '혼밥 외로움', '자취하면서 혼자 밥 먹는 게 제일 외롭다는 인터뷰가 많았음.', '', 8);
   add(seojun, 'memo', '1차 회의 메모', '주제 후보를 셋으로 좁혔다. 다음 주까지 자취생 3명을 인터뷰하기로 했다. 발표 자료는 하은이 정리하기로 결정함.', '', 4);
   const foodIdea = add(seojun, 'idea', '자취생 반찬 나눔 플랫폼', '같은 건물 1인가구 이웃끼리 반찬을 나누는 커뮤니티. 음식물 쓰레기도 줄이고 외로움도 해소.', '', 2);
 
-  add(haeun, 'link', '대학생 소비 패턴 리포트', '20대 가계부 앱 사용률, 구독 서비스 지출 증가. 용돈 관리가 어렵다는 응답이 많음.', 'https://example.com/spending', 40);
+  add(haeun, 'link', '대학생 소비 패턴 리포트', '(샘플) 대학생의 가계부 앱과 구독 지출을 다룬 자료를 모았다는 가정의 메모.', 'https://example.com/spending', 40);
   add(haeun, 'memo', '저축을 게임처럼', '친구랑 저축 챌린지, 퀘스트 달성하면 배지 지급.', '', 12);
   const moneyIdea = add(haeun, 'idea', '대학생 식비 절약 챌린지 앱', '식비 예산을 정하고 친구들과 절약 챌린지. 배달 대신 요리하면 포인트.', '', 5);
 
   add(doyun, 'link', 'AI 튜터 서비스 동향', '인공지능 기반 맞춤형 학습, 챗봇 튜터. 대학 강의 보조 사례.', 'https://example.com/ai-tutor', 120);
   add(doyun, 'memo', '시험기간 스터디 매칭', '과목별로 같이 공부할 사람 추천 알고리즘.', '', 110);
 
-  addAi(jimin, 'ChatGPT', '다회용기 회수율 사례 조사', '국내외 다회용기 순환 서비스의 회수율 통계와 사례를 알려줘', '서울시 다회용기 시범사업은 회수율 90% 이상을 보고했습니다. 해외에서는 대학 캠퍼스 반납함 사례가 많습니다.', 9, 'prof');
+  addAi(jimin, 'ChatGPT', '다회용기 회수율 사례 조사', '국내외 다회용기 순환 서비스의 회수율 통계와 사례를 알려줘', '(샘플용으로 지어낸 답변이에요) 지자체와 대학의 시범사업 자료를 찾아보고, 수치는 원문 출처를 확인해 주세요.', 9, 'prof');
   addAi(haeun, 'Claude', '발표 대본 초안', '식비 절약 챌린지 앱 발표 대본 초안을 3분 분량으로 작성해줘', '안녕하세요, 저희는 대학생의 식비 고민에서 출발했습니다. … 최종 아이디어는 챌린지 앱으로 가자는 의견이 많았습니다.', 7, 'team');
   addAi(seojun, 'ChatGPT', '설문 문항 번역', '자취생 설문 문항을 영어로 번역해줘', 'How often do you order delivery food per week? …', 15, 'me');
 

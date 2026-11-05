@@ -202,13 +202,15 @@ function renderLogin() {
       <div class="logo">🧠</div>
       <h1>BrainRoom</h1>
       <p class="lead">각자 찾아본 자료가 <b>방 인테리어</b>가 되는 팀 브레인스토밍 오피스</p>
+      ${new URLSearchParams(location.search).get('guardian') ? '<p class="notice">👪 자녀의 이용 동의 요청이에요. <b>보호자 본인의</b> Google 계정으로 로그인해 주세요.</p>' : ''}
       ${new URLSearchParams(location.search).get('team') ? '<p class="notice">🔑 방 초대 링크로 들어왔어요. 로그인하면 바로 그 방에 참여해요.</p>' : ''}
       <button class="btn google-btn" id="googleLogin" ${fileMode ? 'disabled' : ''}>${GOOGLE_LOGO}<span>Google 계정으로 로그인</span></button>
       ${fileMode
         ? '<p class="notice">⚠️ 파일을 직접 열면 Google 로그인이 동작하지 않아요.<br>로컬 서버(<code>python -m http.server 5173</code>)로 실행해 주세요.</p>'
-        : '<p class="muted sm">로그인하면 내 계정이 팀원의 방과 연결돼요.</p>'}
+        : '<p class="muted sm">무료 서비스예요. 로그인한 뒤 나이 확인과 동의 화면이 나와요.</p>'}
       <div class="or">또는</div>
       <button class="btn" id="guestSampleBtn">🎲 로그인 없이 샘플 팀으로 체험하기</button>
+      <p class="muted sm">샘플의 사람과 내용은 모두 지어낸 것이고, 아무 데도 저장되지 않아요.</p>
     </div>
   </section>`;
 }
@@ -226,7 +228,9 @@ function renderClaim() {
       <div class="claim-list">
         ${free.map(m => `
           <button class="btn claim-btn" data-claim="${m.id}" style="--mc:${m.color}"><i class="dot"></i>${esc(m.name)}</button>`).join('')}
-        <button class="btn primary" data-claim="new">➕ 새 팀원 "${esc(authUser.name)}"(으)로 참여</button>
+        <label class="sm claim-name">방에서 보일 이름 <span class="muted">(실명이 아니어도 돼요)</span>
+          <input id="claimName" maxlength="20" value="${esc(trunc(authUser.name, 20))}"></label>
+        <button class="btn primary" data-claim="new">➕ 이 이름으로 새 팀원 참여</button>
       </div>
       <button class="btn ghost sm" id="logoutBtn">다른 계정으로 로그인</button>
     </div>
@@ -258,7 +262,7 @@ function renderOffice() {
     ${questsHTML()}
 
     <div class="office-grid">
-      <article class="meeting-card" data-go="meeting">
+      <div class="meeting-card" data-go="meeting">
         <div class="mc-table">
           ${table.slice(0, 8).map((it, i) => `<span style="--mc:${member(it.memberId).color};--i:${i}">${TYPE_META[it.type].icon}</span>`).join('') || '<em>비어 있음</em>'}
         </div>
@@ -267,12 +271,12 @@ function renderOffice() {
           <p>각자 방에서 찾은 자료를 테이블에 모아 연결점을 찾아보세요</p>
           <p class="muted">테이블 위 ${table.length}개 · 발견된 연결 ${links.length}개</p>
         </div>
-      </article>
+      </div>
 
       ${state.members.map(m => {
         const p = profile(m.id);
         return `
-        <article class="room-card" data-go="room" data-member="${m.id}" style="--mc:${m.color}">
+        <div class="room-card" data-go="room" data-member="${m.id}" style="--mc:${m.color}">
           ${roomHTML(m.id, { mini: true })}
           <div class="rc-info">
             <b>${esc(m.name)}</b>${m.id === state.meId ? '<span class="badge">나</span>' : ''}
@@ -280,7 +284,7 @@ function renderOffice() {
           </div>
           <div class="decor-row">${p.decor.slice(0, 7).map(g => `<span class="decor-mini" title="${esc(g.decor.name)}">${decorThumbSVG(g.decor)}</span>`).join('')
             || '<span class="muted sm">아직 물품 없음</span>'}</div>
-        </article>`;
+        </div>`;
       }).join('')}
     </div>
 
@@ -322,6 +326,7 @@ function renderRoom(memberId) {
       </div>
       <aside class="room-side">
         ${mine ? `
+        <h2 class="sr-only">내 방 도구</h2>
         <form id="addForm" class="card add-form">
           <h3>➕ 내 방에 담기</h3>
           <div class="seg">
@@ -344,8 +349,8 @@ function renderRoom(memberId) {
           <h3>🧸 방의 물품 <span class="muted sm">담은 기록의 키워드에 맞춰 생겨요. 누르면 그 기록을 봐요</span></h3>
           <div class="decor-grid">${p.decor.slice(0, 18).map(g => `
             <button class="decor-thumb" data-decor="${g.decor.id}" data-member="${memberId}"
-              title="${esc(g.decor.name)} · ${esc(g.words.slice(0, 4).join(', '))} (기록 ${g.count}개)" aria-label="${esc(g.decor.name)}, 기록 ${g.count}개">
-              ${decorThumbSVG(g.decor)}${g.count > 1 ? `<span class="decor-count" aria-hidden="true">${g.count}</span>` : ''}</button>`).join('')
+              title="${esc(g.decor.name)} · ${esc(g.words.slice(0, 4).join(', '))} (기록 ${g.count}개)" aria-label="${esc(g.decor.name)}, 기록 수 ${g.count}">
+              ${decorThumbSVG(g.decor)}${g.count > 1 ? `<span class="decor-count">${g.count}</span>` : ''}</button>`).join('')
             || '<p class="muted sm">기록을 담으면 키워드에 맞는 물품이 방에 놓여요.</p>'}</div>
         </div>
       </aside>
@@ -588,10 +593,13 @@ function openModal(html) {
   const modal = $('#modal');
   modal.innerHTML = `<div class="modal-card">${html}</div>`;
   modal.hidden = false;
+  modalOpened(modal);
 }
 
 function closeModal() {
+  if ($('#modal').hidden) return;
   $('#modal').hidden = true;
+  modalClosed();
 }
 
 function openMenu() {
@@ -716,6 +724,7 @@ function render() {
     app.innerHTML = '<div class="loading">🌐 온라인 팀을 불러오는 중…</div>';
     return;
   }
+  if (legalGate()) return; // 동의·나이 확인·보호자 동의
   if (!state || cloud.showSetup) return renderSetup();
   if (authActive() && !isProfView()) {
     const mine = memberByUid(authUser.uid);
@@ -759,7 +768,7 @@ document.addEventListener('click', e => {
 
   const claim = t.closest('[data-claim]');
   if (claim) {
-    const id = claim.dataset.claim === 'new' ? addMember(authUser.name).id : claim.dataset.claim;
+    const id = claim.dataset.claim === 'new' ? addMember(($('#claimName')?.value || '').trim().slice(0, 20) || '팀원').id : claim.dataset.claim;
     // 온라인 방: 규칙이 이 팀원을 나에게 내줘야 연결한다 (같은 이름을 두 계정이 고르지 못하게)
     return Promise.resolve(cloudOn() ? cloudSetMemberId(id) : true).then(won => {
       if (!won) return render();

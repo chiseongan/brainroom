@@ -29,6 +29,10 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': TYPES['.html'], 'Cache-Control': 'no-store' });
     return res.end(body);
   }
+  if (url.pathname === '/e2e/axe.js') {
+    res.writeHead(200, { 'Content-Type': TYPES['.js'], 'Cache-Control': 'no-store' });
+    return fs.createReadStream(path.join(ROOT, 'tests/node_modules/axe-core/axe.min.js')).pipe(res);
+  }
   if (url.pathname === '/e2e/proxy-config.js') {
     res.writeHead(200, { 'Content-Type': TYPES['.js'], 'Cache-Control': 'no-store' });
     return res.end(`const PROXY_URL = '${PROXY}';`);

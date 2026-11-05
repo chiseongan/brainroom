@@ -548,12 +548,12 @@ function renderTranscript() {
 
 // ---------- 🎙️ 회의 화면 ----------
 
-const STT_NOTICE = '📝 받아쓰기를 켜면 브라우저(Chrome·Edge)가 <b>내 마이크 소리만</b> 음성 인식 서버로 보내 글자로 바꿔요. 녹취록은 이 방 팀원만 볼 수 있어요. 이어폰을 쓰면 다른 사람 목소리가 내 발언으로 잘못 받아써지는 걸 막을 수 있어요.';
+const STT_NOTICE = '📝 받아쓰기는 기본으로 꺼져 있어요. 켜면 브라우저(Chrome·Edge)가 <b>내 마이크 소리만</b> 음성 인식 서버로 보내 글자로 바꿔요. 녹취록은 이 방 팀원만 볼 수 있어요. 이어폰을 쓰면 다른 사람 목소리가 내 발언으로 잘못 받아써지는 걸 막을 수 있어요.';
 
 function callOptionsHTML() {
   return `
     <label class="check"><input type="checkbox" name="cam"> 📷 카메라 켜고 참여</label>
-    <label class="check"><input type="checkbox" name="stt" ${SpeechRec ? 'checked' : 'disabled'}> 📝 내 발언 받아쓰기${SpeechRec ? '' : ' (이 브라우저는 지원 안 함)'}</label>`;
+    <label class="check"><input type="checkbox" name="stt" ${SpeechRec ? '' : 'disabled'}> 📝 내 발언 받아쓰기${SpeechRec ? '' : ' (이 브라우저는 지원 안 함)'}</label>`;
 }
 
 function renderMeetings() {
@@ -588,6 +588,7 @@ function renderMeetings() {
       </div>`).join('')}
 
     ${live.length || call.id ? '' : `
+      <h2 class="sr-only">회의 시작</h2>
       <form id="callStartForm" class="card call-form">
         <h3>새 회의 시작</h3>
         <input name="title" maxlength="40" placeholder="회의 제목 (예: ${fmtDate(Date.now(), false)} 주제 정하기)">

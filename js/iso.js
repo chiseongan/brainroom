@@ -180,13 +180,14 @@ function walls(W, D, H, color) {
 }
 
 // 전체 씬을 감싸는 svg. viewBox를 방 크기에 맞춰 계산한다.
-function isoSVG(W, D, H, content, cls = '') {
+function isoSVG(W, D, H, content, cls = '', label = '') {
   const pad = 24;
   const minX = -D * TW / 2 - pad;
   const maxX = W * TW / 2 + pad;
   const minY = -H - pad - 12;
   const maxY = (W + D) * TH / 2 + 12 + pad;
-  return `<svg class="iso ${cls}" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">${content}</svg>`;
+  const a11y = label ? `role="group" aria-label="${esc(label)}"` : 'aria-hidden="true"';
+  return `<svg ${a11y} class="iso ${cls}" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">${content}</svg>`;
 }
 
 // 깊이 정렬: 화면 앞쪽(x+y가 큰) 물체를 나중에 그린다

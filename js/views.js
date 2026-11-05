@@ -93,7 +93,7 @@ function renderTimeline() {
       </div>
     </div>
     ${groups.map(g => `
-      <h3 class="tl-day">${g.day}</h3>
+      <h2 class="tl-day">${g.day}</h2>
       <div class="timeline">${g.rows.map(r => r.kind === 'decision' ? `
         <div class="tl-row decision">
           <span class="tl-time">${fmtDate(r.at).split(' ')[1]}</span>
@@ -135,6 +135,7 @@ function renderDecisions() {
       </div>
     </div>
     <div class="dec-layout">
+      <h2 class="sr-only">결정 목록</h2>
       <div class="dec-main">
         <div class="card">
           <h3>확정된 결정 <span class="muted sm">${confirmed.length}건 · 근거 링크가 있는 결정만 보여요</span></h3>
@@ -359,7 +360,7 @@ function questRowHTML(q) {
         <span class="muted sm">${QUEST_TARGETS[q.target]}</span>
         <button class="btn icon" data-tr="quest-del" data-quest="${q.id}" title="퀘스트 삭제">✕</button>
       </div>
-      <div class="bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>
+      <div class="bar" role="progressbar" aria-label="${esc(q.title)} 진행률" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>
       <span class="sm">${done} / ${goal} ${pct >= 100 ? '· ✅ 달성' : `· ${pct}%`}</span>
     </div>`;
 }
@@ -370,11 +371,12 @@ function questsHTML() {
   const pastWeeks = [...new Set(state.quests.filter(q => q.week < now).map(q => q.week))].sort((a, b) => b - a);
   return `
   <section class="card quests">
+    <h2 class="sr-only">이번 주 목표</h2>
     <h3>🎯 이번 주 퀘스트 <span class="muted sm">${weekLabel(now)} · 담긴 기록과 확정된 결정으로 진행률이 자동 계산돼요</span></h3>
     <div class="quest-list">${current.map(questRowHTML).join('') || '<p class="muted sm">이번 주 목표를 정해 보세요.</p>'}</div>
     <form id="questForm" class="inline-form quest-form">
       <input name="title" required maxlength="60" placeholder="목표 (예: 인터뷰 자료 5개 모으기)">
-      <select name="target">${Object.entries(QUEST_TARGETS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+      <select name="target" aria-label="목표 종류">${Object.entries(QUEST_TARGETS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
       <input name="count" type="number" min="1" max="99" value="3" aria-label="목표 개수">
       <button class="btn">추가</button>
     </form>

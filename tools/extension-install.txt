@@ -3,7 +3,7 @@ BrainRoom 대화 담기 (Chrome 확장) {version} — 설치 방법
 
 ChatGPT·Claude·Gemini에서 고른 대화를 BrainRoom 방으로 보내는 확장입니다.
 (켜 둔 동안만 구글·네이버 검색 기록을 모아 고른 것만 보내는 '탐색 기록'도 있습니다)
-서버로 보내지 않고, 내 브라우저에 열려 있는 BrainRoom 탭으로만 전달합니다.
+확장은 내 브라우저에 열려 있는 BrainRoom 탭으로만 전달합니다. 그 뒤 내가 고른 것만 BrainRoom(Firebase)에 저장됩니다.
 
 [설치] Chrome · Edge · 네이버 웨일 (PC에서만)
 1. 이 zip 파일의 압축을 풉니다.

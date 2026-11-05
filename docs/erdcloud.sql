@@ -62,7 +62,6 @@ CREATE TABLE team_roles (
   member_id   VARCHAR(32)  NULL     COMMENT '명단에서 고른 팀원 (교수자는 없음)',
   code        VARCHAR(40)  NULL     COMMENT '참여할 때 쓴 초대 코드',
   name        VARCHAR(100) NULL     COMMENT '방 관리 화면에 보일 이름',
-  email       VARCHAR(200) NULL     COMMENT '방 관리 화면에 보일 이메일 (로그인 토큰과 같아야 함)',
   joined_at   BIGINT       NOT NULL COMMENT '참여 시각',
   PRIMARY KEY (team_id, uid),
   FOREIGN KEY (team_id) REFERENCES teams (team_id),
@@ -322,3 +321,30 @@ CREATE TABLE call_lines (
   FOREIGN KEY (uid) REFERENCES users (uid),
   FOREIGN KEY (member_id) REFERENCES team_members (member_id)
 ) COMMENT = '회의 녹취 (calls/{c}/lines/{id})';
+
+-- users/{uid}.consent 맵
+CREATE TABLE user_consents (
+  uid             VARCHAR(128) NOT NULL COMMENT '사용자',
+  version         VARCHAR(20)  NOT NULL COMMENT '동의한 약관·방침 판',
+  at              BIGINT       NOT NULL COMMENT '동의 시각',
+  over14          BOOLEAN      NOT NULL COMMENT '만 14세 이상 여부 (생년월일은 받지 않음)',
+  terms           BOOLEAN      NOT NULL COMMENT '이용약관 동의',
+  privacy         BOOLEAN      NOT NULL COMMENT '개인정보 수집·이용 동의',
+  guardian_token  VARCHAR(40)  NULL     COMMENT '만 14세 미만의 보호자 요청',
+  PRIMARY KEY (uid),
+  FOREIGN KEY (uid) REFERENCES users (uid)
+) COMMENT = '동의 기록 (users/{uid}.consent)';
+
+-- guardianRequests/{token}
+CREATE TABLE guardian_requests (
+  token           VARCHAR(40)  NOT NULL COMMENT '비밀 링크 (id를 아는 사람만 읽음)',
+  child_uid       VARCHAR(128) NOT NULL COMMENT '아동 계정',
+  status          VARCHAR(10)  NOT NULL COMMENT 'pending | approved | rejected | revoked',
+  guardian_uid    VARCHAR(128) NULL     COMMENT '결정한 보호자 계정',
+  guardian_email  VARCHAR(200) NULL     COMMENT '보호자 이메일 (동의 확인용)',
+  created_at      BIGINT       NOT NULL COMMENT '요청 시각',
+  decided_at      BIGINT       NULL     COMMENT '결정 시각',
+  version         VARCHAR(20)  NOT NULL COMMENT '동의 판',
+  PRIMARY KEY (token),
+  FOREIGN KEY (child_uid) REFERENCES users (uid)
+) COMMENT = '법정대리인 동의 요청';

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "BrainRoom 대화 담기",
-  "version": "0.2.1",
-  "description": "ChatGPT·Claude·Gemini에서 고른 대화와, 탐색 기록을 켠 동안의 구글·네이버 검색 중 고른 것만 BrainRoom 방으로 보냅니다. 서버로 보내지 않고 열려 있는 BrainRoom 탭으로만 전달합니다.",
+  "version": "0.2.2",
+  "description": "ChatGPT·Claude·Gemini에서 고른 대화와, 탐색 기록을 켠 동안의 구글·네이버 검색 중 고른 것만 BrainRoom 방으로 보냅니다. 열려 있는 BrainRoom 탭으로만 전달하고, 저장은 BrainRoom에서 고른 것만 합니다.",
   "permissions": [
     "storage",
     "contextMenus"

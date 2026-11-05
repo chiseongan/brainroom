@@ -1,0 +1,23 @@
+:root { color-scheme: light; }
+body { margin: 0; background: #f6f3ee; color: #1f2330; font: 16px/1.7 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 20px; }
+main:focus { outline: none; }
+h1 { font-size: 28px; margin: 8px 0; }
+h2 { font-size: 19px; margin: 32px 0 8px; }
+a { color: #1d4ed8; }
+a:focus-visible { outline: 3px solid #1d4ed8; outline-offset: 2px; }
+.muted { color: #555b68; }
+.kid { background: #fff; border-left: 6px solid #4f46e5; border-radius: 8px; padding: 4px 20px 12px; margin: 20px 0; }
+.kid h2 { margin-top: 16px; }
+.notice { background: #fff4d6; border: 1px solid #b7791f; border-radius: 8px; padding: 10px 14px; }
+.todo { background: #fff4d6; border-radius: 8px; padding: 10px 14px; }
+.legal-missing { background: #fff4d6; color: #7a4d00; font-weight: 700; padding: 0 6px; border-radius: 4px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; background: #fff; font-size: 15px; }
+caption { text-align: left; color: #555b68; padding: 6px 0; }
+th, td { border: 1px solid #d9d5cc; padding: 8px 10px; text-align: left; vertical-align: top; }
+th { background: #efeae0; }
+code { font-size: 13px; }
+.legal-links { max-width: 760px; margin: 0 auto; padding: 0 20px 32px; font-size: 14px; }
+.skip { position: absolute; left: -9999px; }
+.skip:focus { left: 12px; top: 12px; background: #fff; padding: 8px 12px; z-index: 10; }

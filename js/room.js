@@ -292,7 +292,7 @@ function roomHTML(memberId, { mini = false } = {}) {
 
   return `
   <div class="room ${mini ? 'mini' : ''}" style="--mc:${m.color}">
-    ${isoSVG(ROOM_W, ROOM_D, ROOM_H, scene)}
+    ${isoSVG(ROOM_W, ROOM_D, ROOM_H, scene, '', mini ? '' : `${m.name}의 방 그림: 자료 ${p.links.length}개, 메모 ${p.memos.length}개, 아이디어 ${p.ideas.length}개, AI 대화 ${p.ais.length}개. 물건: ${p.decor.slice(0, 10).map(g => g.decor.name).join(', ') || '없음'}`)}
     <div class="nameplate">${esc(m.name)}의 방 <b>${activityStatus(p)}</b></div>
     ${p.items.length ? '' : '<div class="room-empty">아직 빈 방이에요<br><small>자료를 담으면 방이 꾸며져요</small></div>'}
     <div class="shade" style="--dark:${dark}"></div>

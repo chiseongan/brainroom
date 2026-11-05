@@ -31,6 +31,7 @@
   const fbUser = { uid: user.uid, displayName: user.name, email: user.email, photoURL: '' };
   const currentUser = {
     ...fbUser,
+    delete: async () => { window.__authDeleted = true; },
     getIdToken: async () => (await fetch(`${PROXY}/test-token?uid=${user.uid}`)).text(),
     reauthenticateWithPopup: async () => { throw new Error('no popup in test'); },
   };
