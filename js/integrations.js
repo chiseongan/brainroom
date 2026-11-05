@@ -76,14 +76,37 @@ class ApiError extends Error {
   }
 }
 
+// 실모드에서 프록시가 이 소스를 중계할 수 있는지 (PROXY_URL + 로그인 + /v1/config.proxy[source])
+async function proxyCovers(source) {
+  if (guestMode || typeof proxyReady !== 'function' || !proxyReady()) return false;
+  const cfg = typeof proxyConfig === 'function' ? await proxyConfig() : null;
+  return Boolean(cfg && cfg.proxy && cfg.proxy[source]);
+}
+
+// 원 API URL을 Worker 프록시 경로로 바꿔 호출한다. 플랫폼 토큰은 X-BR-Token으로만 보내고(무상태),
+// Worker가 Bearer로 변환해 전달한다. Worker 인증은 Firebase ID 토큰.
+async function apiGetViaProxy(source, url, token, init) {
+  const base = { github: 'https://api.github.com/' }[source];
+  const path = url.startsWith(base) ? url.slice(base.length) : url.replace(/^https?:\/\/[^/]+\//, '');
+  const idToken = await firebase.auth().currentUser.getIdToken();
+  return fetch(`${PROXY_URL}/v1/proxy/${source}/${path}`, {
+    ...init,
+    headers: { Authorization: `Bearer ${idToken}`, 'X-BR-Token': token || '' },
+  });
+}
+
 async function apiGet(source, url, token, init = {}) {
   const headers = {
     github: { Accept: 'application/vnd.github+json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     figma: String(token).startsWith('Bearer ') ? { Authorization: token } : { 'X-Figma-Token': token }, // OAuth 토큰은 'Bearer …'로 보관
     notion: { Authorization: `Bearer ${token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' },
   }[source];
-  // 샘플 체험에서는 밖으로 나가지 않고 가상 응답을 쓴다 (js/sampleapi.js)
-  const res = guestMode && typeof sampleFetch === 'function' ? await sampleFetch(url) : await fetch(url, { ...init, headers });
+  // 샘플 체험에서는 밖으로 나가지 않고 가상 응답을 쓴다 (js/sampleapi.js).
+  // 실모드에서 프록시가 이 소스를 중계하면 CORS 우회·레이트리밋·예산을 위해 프록시를 타고,
+  // 없으면 기존처럼 직접 호출(GitHub은 CORS가 열려 있어 폴백이 동작).
+  const res = guestMode && typeof sampleFetch === 'function' ? await sampleFetch(url)
+    : await proxyCovers(source) ? await apiGetViaProxy(source, url, token, init)
+    : await fetch(url, { ...init, headers });
   if (!res.ok) {
     let detail = '';
     try { detail = (await res.json()).message || ''; } catch (e) { /* 무시 */ }

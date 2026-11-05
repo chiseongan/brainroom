@@ -268,6 +268,37 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
     ok(realCalls === 0, '다시 가져와도 네트워크 요청 없음');
   }
 
+  console.log('--- 전송 계층: GitHub 프록시 라우팅');
+  {
+    const calls = [];
+    const P = makeApp(async (url, init) => { calls.push({ url: String(url), init: init || {} }); return { ok: true, status: 200, async json() { return []; } }; }, ['지민', '서준', '하은']);
+    const run = code => vm.runInContext(code, P.ctx);
+    // 프록시 가용 환경: 실모드 + PROXY_URL + /v1/config.proxy.github
+    run(`PROXY_URL = 'https://pxy.example'; guestMode = false;
+      proxyReady = () => Boolean(PROXY_URL) && !guestMode;
+      proxyConfig = async () => ({ proxy: { github: true } });
+      firebase = { auth: () => ({ currentUser: { getIdToken: async () => 'idtok-1' } }) };`);
+    await run(`apiGet('github', 'https://api.github.com/repos/o/r/commits?per_page=5', 'ghp_x')`);
+    const viaProxy = calls.at(-1);
+    ok(viaProxy && viaProxy.url === 'https://pxy.example/v1/proxy/github/repos/o/r/commits?per_page=5', `프록시 URL로 라우팅 (${viaProxy && viaProxy.url})`);
+    ok(viaProxy && viaProxy.init.headers['X-BR-Token'] === 'ghp_x', 'X-BR-Token에 GitHub 토큰');
+    ok(viaProxy && viaProxy.init.headers.Authorization === 'Bearer idtok-1', 'Authorization에 Firebase ID 토큰');
+
+    // 폴백: PROXY_URL 미설정이면 원 URL로 직접 fetch
+    calls.length = 0;
+    run(`PROXY_URL = '';`);
+    await run(`apiGet('github', 'https://api.github.com/repos/o/r/issues', 'ghp_y')`);
+    const direct = calls.at(-1);
+    ok(direct && direct.url === 'https://api.github.com/repos/o/r/issues', `프록시 없으면 직접 fetch (${direct && direct.url})`);
+    ok(direct && direct.init.headers.Authorization === 'Bearer ghp_y', '직접 호출은 GitHub 토큰을 Authorization에');
+
+    // 데모 모드: 네트워크 없이 sampleFetch
+    calls.length = 0;
+    run(`PROXY_URL = 'https://pxy.example'; guestMode = true;`);
+    try { await run(`apiGet('github', 'https://api.github.com/repos/o/r/commits', 'ghp_z')`); } catch (e) { /* sampleFetch 미지원 URL 무시 */ }
+    ok(calls.length === 0, '데모 모드는 네트워크 호출 없음 (sampleFetch 경유)');
+  }
+
   // ---------- 결정 추출 품질 (SSRD LS-7: 80% 이상) ----------
   // 직접 쓴 회의체 문장으로 잰 값이다. SSRD가 요구하는 '실제 회의 5건' 측정은 tests/data/ 에 녹취를 넣어 같은 방식으로 한다.
   console.log('--- 결정 추출 품질 (LS-7)');
