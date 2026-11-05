@@ -80,7 +80,7 @@ async function joinCall(id, { cam = false, stt = true } = {}) {
     c.collection('peers').onSnapshot(onPeers, e => console.error(e)),
     c.collection('signals').where('to', '==', myUid()).onSnapshot(onSignals, e => console.error(e)),
     c.collection('lines').orderBy('at').onSnapshot(snap => {
-      call.lines = snap.docs.map(d => d.data());
+      call.lines = snap.docs.map(d => cleanLine(d.data()));
       renderTranscript();
     }, e => console.error(e)),
     c.onSnapshot(snap => {
@@ -145,8 +145,8 @@ async function endCall(id, c = callsRef().doc(id)) {
 
 async function writeCallSummary(c) {
   const [lines, peers] = await Promise.all([c.collection('lines').orderBy('at').get(), c.collection('peers').get()]);
-  const ls = lines.docs.map(d => d.data());
-  const attendees = [...new Set(peers.docs.map(d => d.data().name))];
+  const ls = lines.docs.map(d => cleanLine(d.data()));
+  const attendees = [...new Set(peers.docs.map(d => asStr(d.data().name)))];
   const { summary, summaryBy, decisions } = await meetingSummary(ls, attendees);
   await c.update({ summary, summaryBy, decisions, attendees, lineCount: ls.length });
 }
@@ -195,7 +195,7 @@ function onPeers(snap) {
   const now = Date.now();
   const active = new Map();
   snap.docs.forEach(d => {
-    const p = d.data();
+    const p = cleanPeer(d.data());
     if (p.uid !== myUid() && !p.leftAt && now - p.beat < PEER_STALE_MS) active.set(p.uid, p);
   });
   call.peers = active;
@@ -420,7 +420,7 @@ async function syncMyTalks() {
       const col = callsRef().doc(c.id).collection('lines');
       // 가져온 Meet 녹취는 가져온 사람이 썼으므로 화자(memberId)로 내 발언을 찾는다
       const snap = await (c.imported ? col.where('memberId', '==', state.meId) : col.where('uid', '==', myUid())).get();
-      lines = snap.docs.map(d => d.data()).sort((a, b) => a.at - b.at);
+      lines = snap.docs.map(d => cleanLine(d.data())).sort((a, b) => a.at - b.at);
     } catch (e) {
       console.error(e);
       continue;
@@ -433,12 +433,14 @@ async function syncMyTalks() {
     const ai = await aiSummarize('talk', transcript); // 프록시가 있으면 AI가 내 발언을 정리
     if (cloud.teamId !== teamId || cloud.closing) break; // 요약을 기다리는 동안 방을 나갔다
     const keywords = ai?.keywords.length ? ai.keywords : spokenKeywords(lines, 10); // 내가 한 말의 키워드 (방 물품이 된다)
-    const content = ai
+    const body = ai
       ? formatAiSummary(ai, [`「${c.title}」 회의 (${fmtDate(c.startedAt)}) · 발언 ${lines.length}번`])
       : summarizeMine(lines, c);
+    const content = c.imported ? `📥 ${c.startedByName || '팀원'}님이 가져온 녹취에서 화자를 나로 지정한 내용이에요. 맞으면 공유 범위를 바꾸세요.\n${body}` : body;
     const item = analyze({
       id, memberId: state.meId, type: 'talk', title: `${c.title}에서 내가 한 말`, content,
-      url: '', createdAt: c.endedAt || Date.now(), visibility: 'team', table: null, votes: [],
+      // 가져온 녹취는 가져온 사람이 화자를 정한다 → 내가 확인하기 전에는 나만 본다 (남이 내 이름으로 말을 지어낼 수 없게)
+      url: '', createdAt: c.endedAt || Date.now(), visibility: c.imported ? 'me' : 'team', table: null, votes: [],
       talk: { callId: c.id, lineCount: lines.length, keywords, transcript: transcript.length > 6000 ? `${transcript.slice(0, 6000)}\n…(이하 생략)` : transcript, ...(ai ? { decisions: ai.decisions } : {}) },
     });
     item.keywords = keywords.slice(0, 6); // 자동 분석 대신 발언 키워드로 (회의실 추천 연결에도 쓰임)
@@ -601,7 +603,9 @@ function renderMeetings() {
       <article class="card past-call">
         <header><b>${c.source === 'meet' ? '📥 ' : ''}${esc(c.title)}</b>
           <span class="muted sm">${fmtDate(c.startedAt)} · 약 ${Math.max(1, Math.round(((c.endedAt || c.startedAt) - c.startedAt) / 60000))}분 · 녹취 ${c.lineCount ?? 0}줄</span></header>
-        <label class="check sm"><input type="checkbox" data-mt="share:${c.id}" ${c.shareProf ? 'checked' : ''}> 🎓 교수자에게 이 회의 <b>요약</b> 공유 <span class="muted">(녹취 원문은 공유하지 않아요)</span></label>
+        ${c.startedBy === myUid() || cloud.owner
+          ? `<label class="check sm"><input type="checkbox" data-mt="share:${c.id}" ${c.shareProf ? 'checked' : ''}> 🎓 교수자에게 이 회의 <b>요약</b> 공유 <span class="muted">(녹취 원문은 공유하지 않아요)</span></label>`
+          : `<p class="muted sm">${c.shareProf ? '🎓 교수자에게 요약이 공유됐어요' : '🎓 교수자에게 공유하지 않은 회의예요'}</p>`}
         <details open><summary>요약</summary><pre class="call-summary">${esc(c.summary || (Date.now() - (c.endedAt || 0) < CALL_ABANDONED_MS ? '요약하는 중…' : '요약이 없어요.'))}</pre></details>
         <details data-lines="${c.id}"><summary>전체 녹취록</summary><div class="call-lines">${pastLinesHTML(c.id)}</div></details>
         ${c.startedBy === myUid() || cloud.owner ? `<div class="modal-actions"><button class="btn ghost sm danger" data-mt="erase:${c.id}">🗑️ 이 회의 기록 지우기</button></div>` : ''}
@@ -620,7 +624,7 @@ async function loadPastLines(id) {
   if (pastLines.has(id)) return;
   try {
     const snap = await callsRef().doc(id).collection('lines').orderBy('at').get();
-    pastLines.set(id, snap.docs.map(d => d.data()));
+    pastLines.set(id, snap.docs.map(d => cleanLine(d.data())));
   } catch (e) {
     pastLines.set(id, []);
     writeFailed(e);

@@ -24,6 +24,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (res?.conversation) enqueue(res.conversation);
 });
 
+const APP_URL_LIST = () => Object.values(APP_URLS);
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 // 저장소를 '읽고 → 고치고 → 저장'하는 작업은 한 줄로 세워 차례로 한다
@@ -51,7 +52,10 @@ async function updateBadge() {
 const getSearchLog = async () => (await chrome.storage.local.get({ searchLog: [] })).searchLog;
 const setSearchLog = log => chrome.storage.local.set({ searchLog: log.slice(-200) });
 
+const exploringOn = async () => (await chrome.storage.local.get({ exploring: false })).exploring;
+
 const noteSearch = serial(async ({ engine, query, url }) => {
+  if (!await exploringOn()) return;
   const log = await getSearchLog();
   const recent = log.find(s => s.engine === engine && s.query === query && Date.now() - s.at < 30 * 60 * 1000);
   if (recent) recent.at = Date.now();
@@ -60,6 +64,7 @@ const noteSearch = serial(async ({ engine, query, url }) => {
 });
 
 const noteClick = serial(async ({ engine, query, title, url }) => {
+  if (!await exploringOn()) return;
   const log = await getSearchLog();
   let s = [...log].reverse().find(x => x.engine === engine && x.query === query);
   if (!s) { s = { id: newId(), engine, query, url: '', at: Date.now(), clicks: [] }; log.push(s); }
@@ -104,7 +109,18 @@ async function deliver() {
   });
 }
 
+// 메시지가 어디서 왔는지 본다: 확장 창의 명령은 확장 창에서만, 대기열을 받는 것은 BrainRoom 탭에서만
+const fromPopup = sender => sender.id === chrome.runtime.id && sender.url?.startsWith(chrome.runtime.getURL(''));
+const fromApp = sender => sender.id === chrome.runtime.id && Boolean(sender.tab) && APP_URL_LIST().some(u => sender.url?.startsWith(u));
+const fromContentScript = sender => sender.id === chrome.runtime.id && Boolean(sender.tab);
+const MESSAGE_FROM = {
+  capture: fromContentScript, 'search-query': fromContentScript, 'search-click': fromContentScript,
+  'bridge-ready': fromApp, delivered: fromApp,
+  status: fromPopup, 'open-app': fromPopup, clear: fromPopup, 'search-list': fromPopup, 'search-send': fromPopup, 'search-clear': fromPopup, 'set-exploring': fromPopup,
+};
+
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (!MESSAGE_FROM[msg?.type]?.(sender)) return false;
   (async () => {
     if (msg.type === 'capture') {
       await enqueue(msg.conversation);
@@ -112,7 +128,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     } else if (msg.type === 'bridge-ready') {
       reply({ items: await getQueue() });
     } else if (msg.type === 'delivered') {
-      await setQueue((await getQueue()).filter(q => !msg.ids.includes(q.id)));
+      const ids = Array.isArray(msg.ids) ? msg.ids : [];
+      await setQueue((await getQueue()).filter(q => !ids.includes(q.id)));
       await updateBadge();
       reply({ ok: true });
     } else if (msg.type === 'status') {

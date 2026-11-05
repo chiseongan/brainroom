@@ -9,8 +9,9 @@ function esc(s) {
 }
 
 function safeUrl(url) {
-  if (!url) return '';
-  return /^https?:\/\//i.test(url) ? url : `https://${url}`;
+  const clean = cleanUrl(url);
+  if (!clean) return '';
+  return /^https?:\/\//i.test(clean) ? clean : `https://${clean}`;
 }
 
 function toast(msg) {
@@ -622,7 +623,8 @@ function openMenu() {
   }
   $('#exportWs').onclick = () => download(`brainroom_${state.teamName}_백업.json`, JSON.stringify(state, null, 2), 'application/json');
   $('#exportTeam').onclick = () => {
-    const shared = { ...state, items: state.items.filter(i => i.visibility !== 'me'), viewer: 'student', accessLog: [] };
+    // 파일은 밖으로 돌아다니므로 계정 정보는 뺀다
+    const shared = { ...state, members: state.members.map(({ uid: _u, email: _e, photo: _p, connections: _c, ...m }) => m), items: state.items.filter(i => i.visibility !== 'me'), viewer: 'student', accessLog: [] };
     download(`brainroom_${state.teamName}.json`, JSON.stringify(shared, null, 2), 'application/json');
   };
   $('#exportProf').onclick = () => download(`brainroom_${state.teamName}_교수자제출.json`, JSON.stringify(sanitizeForProf(state), null, 2), 'application/json');
@@ -751,6 +753,7 @@ document.addEventListener('click', e => {
     closePanel();
     closeModal();
     if (CLOUD_ENABLED) clearSession();
+    forgetIntegOnLogout();
     return signOutUser().then(() => toast('로그아웃했어요'));
   }
 
@@ -831,6 +834,7 @@ document.addEventListener('click', e => {
       item.votes = item.votes.includes(state.meId) ? item.votes.filter(v => v !== state.meId) : [...item.votes, state.meId];
       saveState();
     } else if (act.dataset.act === 'pin') {
+      if (item.memberId !== state.meId) return toast('내 아이디어만 고정할 수 있어요');
       member(item.memberId).pinnedIdeaId = item.id;
       saveState();
       toast('📌 화이트보드에 고정했어요');

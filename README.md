@@ -34,6 +34,7 @@ Google 로그인 설정을 마친 뒤 이어서 하면, 팀원끼리 실시간�
 | `…/itemMeta` | 기록 종류·시각·AI 목적 (내용 없음) | 팀원, 교수자 (횟수 집계용) |
 | `…/secrets` | 초대 코드 | 팀원 코드=팀원, 교수자 코드=팀장 |
 | `…/claims` | 팀원 칸을 쓰는 계정 (칸 하나에 계정 하나) | 팀원 |
+| `…/roster` | 명단 한 칸 (이름·색·연결 상태) | 팀원, 교수자 |
 | `…/accessLogs` | 권한 없는 접근 시도 | 팀장 |
 
 - `firebase-config.js`가 비어 있으면 예전처럼 이 브라우저에만 저장하는 데모 모드로 동작합니다.
@@ -42,7 +43,7 @@ Google 로그인 설정을 마친 뒤 이어서 하면, 팀원끼리 실시간�
 - ⚙️ 메뉴 → **🚪 이 방에서 나가기**: 내 계정만 빠지고 팀 데이터는 남습니다 (내 기록과 발언을 함께 지울 수도 있음). 초대 링크로 다시 들어올 수 있습니다. 팀장은 먼저 넘기거나 방을 삭제해야 합니다.
 - ⚙️ 메뉴 → **👥 방 관리** (팀장): 내보내기, 교수자 접근 끊기, 초대 링크 재발급, 팀장 넘기기, 막힌 접근 기록, 방 삭제
 
-배포 순서·권한 모델·비용 한도는 [docs/backend.md](docs/backend.md), 사용법은 [docs/user-guide.md](docs/user-guide.md)를 보세요.
+배포 순서·권한 모델·비용 한도는 [docs/backend.md](docs/backend.md), 보안 설계와 배포 전 체크리스트는 [docs/security.md](docs/security.md), 사용법은 [docs/user-guide.md](docs/user-guide.md)를 보세요.
 
 ## Google Meet 녹취록 가져오기 설정 (Drive에서 고르기를 쓸 때)
 "파일 올리기"(.txt·.vtt)는 설정 없이 됩니다. "Google Drive에서 고르기"를 쓰려면 Google Cloud 콘솔(프로젝트 `brainroom-777b0`)에서 한 번 설정하세요.
@@ -131,6 +132,8 @@ js/themes.js   주제 → 소품 매핑 테이블 (여기에 단어/주제를 �
 js/nlp.js      규칙 기반 키워드 추출, 자료 간 연관도 계산
 js/firebase-config.js  Firebase 웹 앱 설정값 (직접 입력)
 js/auth.js     Google 로그인 (Firebase Authentication)
+js/guard.js    다른 사이트의 iframe 삽입 차단
+js/sanitize.js  밖에서 온 데이터 정화 (Firestore 문서, 불러온 파일)
 js/store.js    상태 관리, localStorage 저장, 샘플 데이터
 js/trace.js    공유 범위, 개인정보 가리기, AI 대화 파싱·분류, 결정 추출, 퀘스트, 보정 요청, 교수자 집계
 js/views.js    타임라인, 결정, 리포트, 퀘스트, AI 대화 불러오기, 교수자 보기 화면

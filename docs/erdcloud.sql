@@ -38,7 +38,7 @@ CREATE TABLE user_teams (
   FOREIGN KEY (team_id) REFERENCES teams (team_id)
 ) COMMENT = '내 방 목록 (users/{uid}.teams)';
 
--- teams/{teamId}.members 배열 (명단)
+-- teams/{teamId}/roster/{memberId} (명단 한 칸)
 CREATE TABLE team_members (
   member_id       VARCHAR(32)  NOT NULL COMMENT '팀원 id',
   team_id         VARCHAR(64)  NOT NULL COMMENT '방',
@@ -53,6 +53,7 @@ CREATE TABLE team_members (
   FOREIGN KEY (uid) REFERENCES users (uid)
 ) COMMENT = '팀원 명단 (teams/{t}.members[])';
 
+-- teams/{teamId}/roster/{memberId} : team_members의 실제 저장 위치 (예전 방은 teams.members 배열을 읽어 옮긴다)
 -- teams/{teamId}/members/{uid}
 CREATE TABLE team_roles (
   team_id     VARCHAR(64)  NOT NULL COMMENT '방',

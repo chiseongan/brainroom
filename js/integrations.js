@@ -14,12 +14,35 @@ const SOURCES = {
   notion: { icon: '📝', name: 'Notion', decor: 'papers' },
 };
 
+// 연동 정보는 계정별로 따로 둔다: 같은 브라우저에 다른 사람이 로그인해도 앞사람의 토큰을 쓸 수 없다. 샘플 체험은 보지 않는다.
+function integKey() {
+  if (guestMode) return `${INTEG_KEY}:guest`;
+  return authUser?.uid ? `${INTEG_KEY}:${authUser.uid}` : INTEG_KEY;
+}
+
 function loadInteg() {
-  try { return JSON.parse(localStorage.getItem(INTEG_KEY)) || {}; } catch (e) { return {}; }
+  try {
+    const key = integKey();
+    // 계정별로 나누기 전의 값은 먼저 로그인한 계정으로 옮기고 지운다
+    if (authUser?.uid && !guestMode && localStorage.getItem(key) === null && localStorage.getItem(INTEG_KEY) !== null) {
+      localStorage.setItem(key, localStorage.getItem(INTEG_KEY));
+      localStorage.removeItem(INTEG_KEY);
+    }
+    return JSON.parse(localStorage.getItem(key)) || {};
+  } catch (e) { return {}; }
+}
+
+// 로그아웃할 때 연결된 도구가 있으면 물어본다 (공용 PC에 토큰을 남기지 않게)
+function forgetIntegOnLogout() {
+  const c = loadInteg();
+  if (!c.github?.token && !c.figma?.token && !c.notion?.token) return;
+  if (confirm('이 브라우저에 저장된 내 연동 토큰도 지울까요?\n공용 PC라면 지우세요.\n\n[확인] 지우기 (다음에 다시 연결)\n[취소] 남겨 두기')) {
+    try { localStorage.removeItem(integKey()); } catch (e) { /* 무시 */ }
+  }
 }
 
 function saveInteg(next) {
-  try { localStorage.setItem(INTEG_KEY, JSON.stringify(next)); } catch (e) { /* 무시 */ }
+  try { localStorage.setItem(integKey(), JSON.stringify(next)); } catch (e) { /* 무시 */ }
 }
 
 function syncKey() {

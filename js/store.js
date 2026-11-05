@@ -16,7 +16,8 @@ let state = null;
 let saveSuppressed = false; // 온라인에 올릴 워크스페이스를 만드는 동안 이 브라우저 데이터를 덮어쓰지 않도록
 
 function uid() {
-  return Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return [...bytes].map(b => b.toString(36).padStart(2, '0')).join('').slice(0, 11) + Date.now().toString(36).slice(-4);
 }
 
 function loadState() {
@@ -29,6 +30,9 @@ function loadState() {
 
 // 예전 버전 워크스페이스에 새 필드를 채운다. 공유 범위가 없던 기록은 원래 팀에 공유되던 것이라 '팀'으로 둔다.
 function migrate(ws) {
+  ws.items ??= [];
+  ws.members ??= [];
+  sanitizeWorkspace(ws); // 파일·저장소에서 온 값은 믿지 않는다
   ws.course ??= '';
   ws.links ??= {}; // 방 공용 연동 대상 { github: '팀/저장소', figma: [파일 키], notion: [페이지 id] }
   ws.viewer ??= 'student';
@@ -118,7 +122,8 @@ function deleteItem(id) {
   // 연동 작업을 지우면 다음 가져오기 때 다시 들어오지 않게 기억한다 (js/integrations.js)
   if (gone?.type === 'work' && typeof rememberDismissedWork === 'function') rememberDismissedWork(gone.id);
   state.items = state.items.filter(i => i.id !== id);
-  state.members.forEach(m => { if (m.pinnedIdeaId === id) m.pinnedIdeaId = null; });
+  const me = member(state.meId);
+  if (me?.pinnedIdeaId === id) me.pinnedIdeaId = null; // 남의 칸은 고칠 수 없다 (규칙이 막는다)
   // 근거가 사라진 결정은 자동으로 '확인 필요' 목록으로 간다 (ONRQ-2)
   saveState();
 }

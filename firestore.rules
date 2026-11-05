@@ -33,6 +33,17 @@ service cloud.firestore {
     }
     function str(v, max) { return v is string && v.size() <= max; }
     function ownsClaimAfter(t, m) { return getAfter(claimPath(t, m)).data.uid == request.auth.uid; }
+    function safeId(v) { return v is string && v.matches('^[A-Za-z0-9_.:-]{1,200}$'); }
+    function number(v) { return v is int || v is float; }
+    function myMemberId(t) { return get(rolePath(t)).data.memberId; }
+
+    // 명단 한 칸 (roster/{memberId}). 배열을 칸별로 검사하면 8명부터 규칙 평가 한도(1,000)를 넘어서 문서로 나눴다
+    function validEntry(e, memberId) {
+      return e.id == memberId && safeId(memberId) && str(e.name, 100)
+        && e.color is string && e.color.matches('^#[0-9a-fA-F]{6}$')
+        && (e.get('photo', '') == '' || e.photo.matches('^https://[a-z0-9-]+[.]googleusercontent[.]com/[^ "<>]*$'))
+        && str(e.get('email', ''), 200);
+    }
 
     // 기록 내용의 최소 검사 (Firestore 문서 한도 1MB 안에서 한 사람이 방을 망가뜨리지 못하게)
     function validRecord(d) {
@@ -41,11 +52,25 @@ service cloud.firestore {
         && str(d.title, 1000)
         && str(d.get('content', ''), 50000)
         && str(d.get('url', ''), 4000)
-        && d.createdAt is number;
+        && (!d.get('url', '').matches('^[a-zA-Z][a-zA-Z0-9+.-]*:.*') || d.url.matches('^[hH][tT][tT][pP][sS]?://.*')) // javascript: 등 거부
+        && number(d.createdAt) && d.createdAt <= request.time.toMillis() + 86400000 // 미래 시각으로 기록을 속이지 못하게
+        && safeId(d.memberId)
+        && (d.get('table', null) == null || (number(d.table.x) && number(d.table.y)));
     }
 
     // 새 기록: 본인이 작성자이고 명단에서 고른 자기 팀원 id로만 쓸 수 있다.
     // 예외: 기여 보정 요청을 다른 팀원이 확인해 '빠진 기여'를 추가할 때 (RQ-14)
+    // 다른 팀원이 내 기록의 분류를 바꾸려면 그 기록에 대한 보정 요청을 확인하는 경우여야 한다 (RQ-14)
+    function appliedCorrectionOk(t, id) {
+      let c = get(/databases/$(database)/documents/teams/$(t)/corrections/$(request.resource.data.appliedCorrection)).data;
+      return c.get('itemId', '') == id && c.requesterUid != request.auth.uid;
+    }
+    // 투표는 내 표만 넣고 뺄 수 있다
+    function ownVoteOnly(t) {
+      let before = resource.data.get('votes', []).toSet();
+      let after = request.resource.data.get('votes', []).toSet();
+      return after.difference(before).union(before.difference(after)).hasOnly([myMemberId(t)]);
+    }
     function correctionOk(t) {
       let c = get(/databases/$(database)/documents/teams/$(t)/corrections/$(request.resource.data.correctionId)).data;
       return c.kind == 'missing'
@@ -74,9 +99,12 @@ service cloud.firestore {
 
     match /teams/{t} {
       allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid
-        && !('deleting' in request.resource.data);
+        && !('deleting' in request.resource.data)
+        && str(request.resource.data.teamName, 200) && request.resource.data.get('members', []).size() == 0;
       allow read: if isMember(t) || isProf(t);
-      allow update: if (isMember(t) && onlyKeys(['teamName', 'course', 'members', 'decisionDismissed', 'links']))
+      // 명단은 roster 문서로 옮겼다. 예전 방의 members 배열은 고칠 수 없다 (읽기만 해서 옮긴다)
+      allow update: if (isMember(t) && onlyKeys(['teamName', 'course', 'decisionDismissed', 'links'])
+          && str(request.resource.data.get('teamName', ''), 200) && str(request.resource.data.get('course', ''), 200))
         // 팀장 넘기기: 받는 사람은 이미 이 방의 팀원이어야 한다
         || (isOwner(t) && onlyKeys(['ownerUid'])
             && get(/databases/$(database)/documents/teams/$(t)/members/$(request.resource.data.ownerUid)).data.role == 'student')
@@ -86,7 +114,8 @@ service cloud.firestore {
 
       // 초대 코드: 팀원 코드는 팀원이, 교수자 코드는 팀장만 읽는다. 다시 발급(옛 링크 무효, 기간 새로)은 팀장만
       match /secrets/{kind} {
-        allow create: if signedIn() && getAfter(teamPath(t)).data.ownerUid == request.auth.uid;
+        allow create: if signedIn() && getAfter(teamPath(t)).data.ownerUid == request.auth.uid
+          && str(request.resource.data.code, 100) && request.resource.data.code.size() >= 16;
         allow read: if (kind == 'student' && isMember(t)) || (kind == 'prof' && isOwner(t));
         allow update: if isOwner(t) && onlyKeys(['code', 'expiresAt'])
           && str(request.resource.data.code, 100) && request.resource.data.code.size() >= 16
@@ -102,6 +131,17 @@ service cloud.firestore {
           && getAfter(rolePath(t)).data.role == 'student'
           && getAfter(rolePath(t)).data.memberId == memberId;
         allow delete: if signedIn() && (resource.data.uid == request.auth.uid || isOwner(t));
+      }
+
+      // 명단: 팀원은 내 칸만, 팀장은 모든 칸을 고친다. 새 칸은 더할 수 있지만 이미 주인이 있는 칸은 만들 수 없다
+      match /roster/{memberId} {
+        allow read: if isMember(t) || isProf(t);
+        allow create: if isMember(t) && validEntry(request.resource.data, memberId)
+          && (isOwner(t) || (request.resource.data.get('uid', request.auth.uid) == request.auth.uid
+              && (!exists(claimPath(t, memberId)) || get(claimPath(t, memberId)).data.uid == request.auth.uid)));
+        allow update: if isMember(t) && validEntry(request.resource.data, memberId)
+          && (isOwner(t) || (memberId == myMemberId(t) && request.resource.data.get('uid', request.auth.uid) == request.auth.uid));
+        allow delete: if isOwner(t);
       }
 
       match /members/{uid} {
@@ -136,17 +176,22 @@ service cloud.firestore {
       match /items/{id} {
         allow read: if (isMember(t) && (resource.data.visibility in ['team', 'prof'] || resource.data.ownerUid == request.auth.uid))
                     || (isProf(t) && resource.data.visibility == 'prof');
-        allow create: if isMember(t) && validNewRecord(t) && validRecord(request.resource.data);
+        allow create: if isMember(t) && safeId(id) && request.resource.data.get('id', id) == id
+          && validNewRecord(t) && validRecord(request.resource.data);
         allow update: if isMember(t) && (
           // 작성자는 자기 기록을 고칠 수 있다 (작성자·팀원 id는 못 바꿈)
           (resource.data.ownerUid == request.auth.uid
             && request.resource.data.ownerUid == resource.data.ownerUid
             && request.resource.data.memberId == resource.data.memberId
+            && request.resource.data.get('id', id) == id
             && validRecord(request.resource.data))
-          // 다른 팀원은 공개된 기록에 투표·테이블 이동·분류 보정만.
-          // AI 대화 원문은 고칠 수 없다 (사용 목적만, 또는 보정으로 AI 대화가 새로 될 때)
+          // 다른 팀원은 공개된 기록에 내 투표·테이블 이동만.
+          // 분류(종류·주제·키워드·목적)는 그 기록의 보정 요청을 확인할 때만, AI 대화 원문은 언제나 못 고친다
           || (resource.data.visibility in ['team', 'prof']
-            && onlyKeys(['votes', 'table', 'type', 'themes', 'keywords', 'ai'])
+            && onlyKeys(['votes', 'table', 'type', 'themes', 'keywords', 'ai', 'appliedCorrection'])
+            && (!changed('votes') || ownVoteOnly(t))
+            && (!changed('table') || request.resource.data.table == null || (number(request.resource.data.table.x) && number(request.resource.data.table.y)))
+            && (!(changed('type') || changed('themes') || changed('keywords') || changed('ai') || changed('appliedCorrection')) || appliedCorrectionOk(t, id))
             && (!changed('ai') || resource.data.get('ai', null) == null
                 || request.resource.data.ai.diff(resource.data.ai).affectedKeys().hasOnly(['purpose'])))
         );
@@ -155,19 +200,27 @@ service cloud.firestore {
 
       match /itemMeta/{id} {
         allow read: if isMember(t) || isProf(t);
-        allow create: if isMember(t) && validNewRecord(t);
+        // 횟수 기록은 실제 기록과 함께만 만든다 (기록 없이 횟수만 늘려 기여를 부풀리지 못하게)
+        allow create: if isMember(t) && safeId(id) && validNewRecord(t)
+          && existsAfter(/databases/$(database)/documents/teams/$(t)/items/$(id))
+          && request.resource.data.visibility in ['me', 'team', 'prof']
+          && request.resource.data.type in ['link', 'memo', 'idea', 'ai', 'talk', 'work', 'search'];
         allow update: if isMember(t) && (
           (resource.data.ownerUid == request.auth.uid
             && request.resource.data.ownerUid == resource.data.ownerUid
             && request.resource.data.memberId == resource.data.memberId)
-          || (resource.data.visibility in ['team', 'prof'] && onlyKeys(['type', 'purpose']))
+          // 다른 팀원: 그 기록의 보정 요청을 확인해 분류가 바뀐 경우에만 똑같이 맞춘다
+          || (resource.data.visibility in ['team', 'prof'] && onlyKeys(['type', 'purpose'])
+              && get(/databases/$(database)/documents/teams/$(t)/items/$(id)).data.get('appliedCorrection', null) != null
+              && get(/databases/$(database)/documents/teams/$(t)/items/$(id)).data.type == request.resource.data.type)
         );
         allow delete: if (isMember(t) && resource.data.ownerUid == request.auth.uid) || tearingDown(t);
       }
 
       match /decisions/{id} {
         allow read: if isMember(t) || isProf(t);
-        allow create, update: if isMember(t) && str(request.resource.data.text, 5000);
+        allow create, update: if isMember(t) && safeId(id) && str(request.resource.data.text, 5000)
+          && request.resource.data.get('sourceIds', []) is list && request.resource.data.get('sourceIds', []).size() <= 50;
         allow delete: if isMember(t) || tearingDown(t);
       }
 
@@ -179,18 +232,25 @@ service cloud.firestore {
 
       match /corrections/{id} {
         allow read: if isMember(t);
-        allow create: if isMember(t) && request.resource.data.requesterUid == request.auth.uid;
+        // 보정 요청은 내 기여에 대해서만
+        allow create: if isMember(t) && safeId(id) && request.resource.data.requesterUid == request.auth.uid
+          && request.resource.data.memberId == myMemberId(t)
+          && request.resource.data.get('status', '') == 'pending';
         // 다른 팀원 한 명이 확인해야 반영된다. 확인자는 자기 자신으로만 남길 수 있다
         allow update: if isMember(t) && resource.data.requesterUid != request.auth.uid
           && onlyKeys(['status', 'confirmedBy'])
-          && request.resource.data.get('confirmedBy', null) == get(rolePath(t)).data.memberId;
+          && request.resource.data.status in ['applied', 'rejected']
+          && resource.data.status == 'pending' // 한 번 처리한 요청은 되돌리지 못한다
+          && request.resource.data.get('confirmedBy', null) == myMemberId(t);
         allow delete: if (isMember(t) && resource.data.requesterUid == request.auth.uid) || tearingDown(t);
       }
 
       // 기여 보정 변경 이력: 추가만 가능
       match /logs/{id} {
         allow read: if isMember(t) || isProf(t);
-        allow create: if isMember(t) && str(request.resource.data.text, 2000);
+        // 누가 남겼는지 함께 기록한다 (남의 이름으로 이력을 위조하지 못하게)
+        allow create: if isMember(t) && str(request.resource.data.text, 2000)
+          && request.resource.data.by == request.auth.uid;
         allow delete: if tearingDown(t);
       }
 
@@ -198,19 +258,25 @@ service cloud.firestore {
       match /calls/{c} {
         // 교수자는 팀이 '교수자에게 공유'한 회의만 (요약만 쓰고 녹취 lines는 못 읽는다)
         allow read: if isMember(t) || (isProf(t) && resource.data.shareProf == true);
-        allow create: if isMember(t) && request.resource.data.startedBy == request.auth.uid
-          && request.resource.data.status in ['live', 'ended'] && str(request.resource.data.title, 200);
+        allow create: if isMember(t) && safeId(c) && request.resource.data.startedBy == request.auth.uid
+          && request.resource.data.status in ['live', 'ended'] && str(request.resource.data.title, 200)
+          && request.resource.data.get('shareProf', false) == false;
         allow update: if isMember(t)
           && onlyKeys(['status', 'endedAt', 'summary', 'summaryBy', 'attendees', 'lineCount', 'shareProf', 'decisions', 'closedBy'])
           && request.resource.data.status in ['live', 'ended']
           // 끝난 회의를 다시 열 수 없다
           && !(resource.data.status == 'ended' && request.resource.data.status != 'ended')
-          && (request.resource.data.get('summary', null) == null || str(request.resource.data.summary, 50000));
+          && (request.resource.data.get('summary', null) == null || str(request.resource.data.summary, 50000))
+          && (!changed('closedBy') || request.resource.data.closedBy == request.auth.uid)
+          // 이미 저장된 요약은 다른 팀원이 고쳐 쓸 수 없다
+          && (!(changed('summary') || changed('decisions') || changed('attendees') || changed('lineCount')) || resource.data.get('summary', null) == null)
+          // 교수자에게 공유하는 것은 회의를 시작한 사람이나 팀장만 정한다
+          && (!changed('shareProf') || resource.data.startedBy == request.auth.uid || isOwner(t));
         allow delete: if canEraseCall(t, c);
 
         match /peers/{uid} {
           allow read: if isMember(t);
-          allow create, update: if isMember(t) && request.auth.uid == uid;
+          allow create, update: if isMember(t) && request.auth.uid == uid && str(request.resource.data.get('name', ''), 100);
           allow delete: if canEraseCall(t, c);
         }
         // 연결 정보: 보낸 사람이 만들고, 받는 사람만 읽고 지운다. 못 받은 신호는 보낸 사람이 나갈 때 치운다
@@ -231,13 +297,16 @@ service cloud.firestore {
       match /presence/{uid} {
         allow read: if isMember(t);
         allow create, update: if isMember(t) && request.auth.uid == uid
-          && (request.resource.data.memberId == null || request.resource.data.memberId == get(rolePath(t)).data.memberId);
+          && (request.resource.data.memberId == null || request.resource.data.memberId == myMemberId(t))
+          && number(request.resource.data.at);
         allow delete: if (isMember(t) && request.auth.uid == uid) || tearingDown(t);
       }
 
       // 권한 없는 접근 시도 기록 (ONRQ-5): 누구나 남길 수 있고 팀장만 읽는다
+      // 계정·종류마다 하루 한 건 (id = uid_종류_날짜) 이라 낯선 사람이 기록을 쏟아내 채우지 못한다
       match /accessLogs/{id} {
         allow create: if signedIn() && request.resource.data.uid == request.auth.uid
+          && id.matches('^' + request.auth.uid + '_[a-z-]{1,20}_[0-9]{8}$')
           && request.resource.data.keys().hasOnly(['uid', 'email', 'what', 'at'])
           && str(request.resource.data.get('what', ''), 40)
           && request.resource.data.get('email', '') == request.auth.token.get('email', '');

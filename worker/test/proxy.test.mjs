@@ -14,7 +14,7 @@ const jwk = { ...(await crypto.subtle.exportKey('jwk', publicKey)), kid: 'k1', a
 async function idToken(over = {}) {
   const now = Math.floor(Date.now() / 1000);
   const head = enc(JSON.stringify({ alg: 'RS256', kid: 'k1', typ: 'JWT' }));
-  const body = enc(JSON.stringify({ aud: PROJECT, iss: `https://securetoken.google.com/${PROJECT}`, sub: 'uid-1', email: 'a@x.com', iat: now, exp: now + 3600, ...over }));
+  const body = enc(JSON.stringify({ aud: PROJECT, iss: `https://securetoken.google.com/${PROJECT}`, sub: 'uid-1', email: 'a@x.com', email_verified: true, firebase: { sign_in_provider: 'google.com' }, iat: now, exp: now + 3600, ...over }));
   const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', privateKey, new TextEncoder().encode(`${head}.${body}`));
   return `${head}.${body}.${Buffer.from(sig).toString('base64url')}`;
 }
@@ -32,6 +32,7 @@ const upstream = http.createServer(async (req, res) => {
     const body = JSON.parse(raw);
     const isVision = Array.isArray(body.messages[0].content);
     if (claudeMode === 'refusal') return send(200, { id: 'm', type: 'message', role: 'assistant', model: body.model, content: [], stop_reason: 'refusal', stop_details: { type: 'refusal', category: null }, usage: { input_tokens: 10, output_tokens: 0 } });
+    if (claudeMode === 'bad') return send(400, { type: 'error', error: { type: 'invalid_request_error', message: 'internal secret detail' } });
     if (claudeMode === '429') return send(429, { type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } });
     const out = isVision
       ? { keywords: ['로그인', '#결제', '결제', '지'] }
@@ -81,6 +82,21 @@ ok((await call('POST', '/v1/summarize', { kind: 'meeting', text: 'x' }, await id
 ok((await call('POST', '/v1/summarize', { kind: 'meeting', text: 'x' }, await idToken({ exp: Math.floor(Date.now() / 1000) - 10 }))).status === 401, 'expired token → 401');
 const tampered = good.split('.'); tampered[1] = enc(JSON.stringify({ aud: PROJECT, iss: `https://securetoken.google.com/${PROJECT}`, sub: 'hacker', iat: 1, exp: 9e9 }));
 ok((await call('POST', '/v1/summarize', { kind: 'meeting', text: 'x' }, tampered.join('.'))).status === 401, 'tampered token (bad signature) → 401');
+
+// 로그인 종류·메일 도메인
+ok((await call('POST', '/v1/summarize', { kind: 'ai', text: 'x' }, await idToken({ sub: 'a1', firebase: { sign_in_provider: 'anonymous' } }))).status === 403, 'anonymous sign-in rejected');
+ok((await call('POST', '/v1/summarize', { kind: 'ai', text: 'x' }, await idToken({ sub: 'a2', firebase: {} }))).status === 403, 'missing provider rejected');
+const schoolEnv = { ...env, ALLOWED_EMAIL_DOMAINS: 'univ.ac.kr' };
+const usageAs = async token => (await worker.fetch(new Request('https://proxy.test/v1/usage', { headers: { Authorization: `Bearer ${token}` } }), schoolEnv)).status;
+ok(await usageAs(await idToken({ sub: 'b1', email: 'x@gmail.com' })) === 403, 'email domain restriction');
+ok(await usageAs(await idToken({ sub: 'b2', email: 'x@univ.ac.kr', email_verified: false })) === 403, 'unverified email rejected');
+ok(await usageAs(await idToken({ sub: 'b3', email: 'x@UNIV.ac.kr' })) === 200, 'allowed domain accepted');
+const noneAlg = `${enc(JSON.stringify({ alg: 'none', kid: 'k1' }))}.${enc(JSON.stringify({ aud: PROJECT, iss: `https://securetoken.google.com/${PROJECT}`, sub: 'hacker', iat: 1, exp: 9e9, firebase: { sign_in_provider: 'google.com' } }))}.`;
+ok((await call('GET', '/v1/usage', null, noneAlg)).status === 401, 'alg=none token rejected');
+{
+  const r = await worker.fetch(new Request('https://proxy.test/v1/usage', { headers: { Authorization: `Bearer ${good}` } }), env);
+  ok(r.headers.get('Cache-Control') === 'no-store' && r.headers.get('X-Content-Type-Options') === 'nosniff', 'responses are not cached');
+}
 
 // 요약
 const s = await call('POST', '/v1/summarize', { kind: 'meeting', text: '안치성: 다회용기 순환 서비스로 하기로 했어요\n김단유: 설문은 제가 만들게요' }, good);
@@ -176,10 +192,22 @@ ok((await call('POST', '/v1/oauth/notion/refresh', { refreshToken: 'x' })).statu
 // TURN
 const t = await call('GET', '/v1/turn', null, good);
 ok(t.status === 200 && t.body.iceServers[0].username === 'u' && t.body.iceServers[0].urls.some(u => u.startsWith('turn:')), 'TURN credentials normalized to iceServers[]');
+ok(t.body.ttl === 4 * 3600 && JSON.parse(seen.filter(x => x.path === '/turn').at(-1).body).ttl === 4 * 3600, 'TURN credential lifetime limited');
+{
+  const tEnv = { ...env, TURN_REQUESTS_PER_USER: '2' };
+  const token = await idToken({ sub: 'turn-user' });
+  const hit = async () => (await worker.fetch(new Request('https://proxy.test/v1/turn', { headers: { Authorization: `Bearer ${token}` } }), tEnv)).status;
+  const got = [await hit(), await hit(), await hit()];
+  ok(got.join() === '200,200,429', `TURN requests limited per user (${got})`);
+}
 
 // 설정 안 된 기능
 const bare = { ...env, ANTHROPIC_API_KEY: '', TURN_KEY_ID: '' };
 const r1 = await worker.fetch(new Request('https://proxy.test/v1/summarize', { method: 'POST', headers: { Authorization: `Bearer ${good}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'ai', text: 'x' }) }), bare);
 ok(r1.status === 503, 'LLM not configured → 503');
+claudeMode = 'bad';
+const leak = await call('POST', '/v1/summarize', { kind: 'ai', text: 'x' }, await idToken({ sub: 'leak-check' }));
+claudeMode = 'ok';
+ok(leak.status === 400 && !JSON.stringify(leak.body).includes('internal secret detail'), 'upstream error details are not exposed');
 
 upstream.close();

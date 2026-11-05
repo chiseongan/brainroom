@@ -19,6 +19,8 @@
     window.__warns.push(a.map(x => (x && x.code ? `${x.code}: ${x.message}` : String(x))).join(' '));
     origWarn(...a);
   };
+  window.__csp = [];
+  document.addEventListener('securitypolicyviolation', e => window.__csp.push(`${e.effectiveDirective} ${e.blockedURI}`));
   window.addEventListener('error', e => window.__errors.push(`exception: ${e.message}`));
   window.addEventListener('unhandledrejection', e => window.__errors.push(`rejection: ${e.reason?.code || ''} ${e.reason?.message || e.reason}`));
 

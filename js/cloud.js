@@ -3,7 +3,8 @@
 //
 // 데이터 구조 (권한은 firestore.rules가 강제)
 //   users/{uid}                     { teams: { [teamId]: { name, role } } }  내가 속한 팀 목록
-//   teams/{teamId}                  { teamName, course, ownerUid, members[], decisionDismissed[] }
+//   teams/{teamId}                  { teamName, course, ownerUid, decisionDismissed[], links } (예전 방은 members[]도)
+//   teams/{teamId}/roster/{memberId} { id, name, color, uid, ... }  명단 한 칸 (팀원은 내 칸만, 팀장은 모두)
 //   teams/{teamId}/secrets/{kind}   { code, expiresAt }  student = 팀원 초대 코드, prof = 교수자 초대 코드 (팀장만 읽음)
 //   teams/{teamId}/members/{uid}    { uid, role, memberId, code, name, email }  역할 문서 (본인과 팀장만 읽음)
 //   teams/{teamId}/claims/{memberId} { uid, at }  명단의 팀원 한 명 = 계정 하나 (먼저 만든 계정이 그 팀원)
@@ -132,7 +133,8 @@ async function cloudOnAuth() {
 
 async function loadMyTeams() {
   const snap = await userRef().get();
-  cloud.myTeams = snap.exists ? snap.data().teams || {} : {};
+  const teams = snap.exists ? snap.data().teams || {} : {};
+  cloud.myTeams = Object.fromEntries(Object.entries(teams).filter(([id]) => isId(id)).map(([id, t]) => [id, { name: asStr(t?.name).slice(0, 200), role: t?.role === 'prof' ? 'prof' : 'student' }]));
 }
 
 async function rememberTeam(teamId, name, role) {
@@ -164,8 +166,10 @@ async function cloudJoin(teamId, code, role) {
 
 // ONRQ-5: 권한 없는 접근 시도 기록 (팀장만 읽을 수 있음)
 function logDenied(teamId, what) {
-  db.collection('teams').doc(teamId).collection('accessLogs')
-    .add({ uid: authUser.uid, email: authUser.email, what, at: Date.now() })
+  if (!isId(teamId)) return;
+  const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  db.collection('teams').doc(teamId).collection('accessLogs').doc(`${authUser.uid}_${what}_${day}`)
+    .set({ uid: authUser.uid, email: authUser.email, what, at: Date.now() })
     .catch(e => console.warn('접근 기록을 남기지 못했어요', e)); // 기록 실패가 사용자를 막지는 않는다
 }
 
@@ -188,11 +192,11 @@ function cloudOpenTeam(teamId) {
   cloud.localMode = false;
   cloud.teamId = teamId;
   cloud.docs = {
-    team: null, meta: new Map(), itemsTeam: new Map(), itemsProf: new Map(), itemsMine: new Map(),
+    team: null, roster: new Map(), meta: new Map(), itemsTeam: new Map(), itemsProf: new Map(), itemsMine: new Map(),
     decisions: new Map(), quests: new Map(), corrections: new Map(), logs: new Map(), calls: new Map(),
   };
   cloud.callsDenied = false;
-  cloud.synced = { team: {}, items: {}, decisions: {}, quests: {}, corrections: {}, logs: {} };
+  cloud.synced = { team: {}, roster: {}, items: {}, decisions: {}, quests: {}, corrections: {}, logs: {} };
   state = migrate({
     version: 1, teamId, teamName: '', course: '', members: [], items: [], meId: null,
     view: 'meeting', roomId: null, viewer: 'student',
@@ -200,6 +204,7 @@ function cloudOpenTeam(teamId) {
   savePrefs({ mode: 'team', lastTeam: teamId });
   cloud.roleDoc = null;
   cloud.claimChecked = false;
+  cloud.rosterMoved = false;
   cloud.settingMember = false;
   cloud.closing = false;
 
@@ -222,15 +227,19 @@ function cloudOpenTeam(teamId) {
   cloud.unsubs.push(t.onSnapshot(snap => {
     if (!snap.exists) return fail({ code: 'not-found' });
     if (snap.data().deleting && snap.data().ownerUid !== authUser.uid) return fail({ code: 'not-found' }); // 팀장이 삭제하는 중
-    cloud.docs.team = snap.data();
+    cloud.docs.team = cleanTeam(snap.data());
     cloud.loaded = true;
     rebuildState();
   }, fail));
+  // 받은 문서는 바로 정화한다. 형식이 잘못된 문서는 없는 것으로 본다 (js/sanitize.js)
+  const cleanOf = { roster: (raw, id) => cleanMember({ ...raw, id }), meta: cleanItemMeta, itemsTeam: cleanItem, itemsProf: cleanItem, itemsMine: cleanItem, decisions: cleanDecision, quests: cleanQuest, corrections: cleanCorrection, logs: cleanLog };
+  const cleanDocs = (snap, fn) => new Map(snap.docs.map(d => [d.id, fn(d.data(), d.id)]).filter(([, v]) => v));
   const listen = (query, key) => cloud.unsubs.push(query.onSnapshot(snap => {
-    cloud.docs[key] = new Map(snap.docs.map(d => [d.id, d.data()]));
+    cloud.docs[key] = cleanDocs(snap, cleanOf[key]);
     rebuildState();
   }, fail));
   // 공유 범위별로 나눠 듣는다: 남의 '나만' 기록은 규칙상 읽을 수 없어서, 한 번에 전부 읽는 쿼리는 거절된다
+  listen(t.collection('roster'), 'roster');
   listen(t.collection('itemMeta'), 'meta');
   listen(t.collection('items').where('visibility', '==', 'team'), 'itemsTeam');
   listen(t.collection('items').where('visibility', '==', 'prof'), 'itemsProf');
@@ -238,7 +247,7 @@ function cloudOpenTeam(teamId) {
   ['decisions', 'quests', 'corrections', 'logs'].forEach(c => listen(t.collection(c), c));
   // 회의 기록: 예전 규칙이면 읽기가 거절되는데, 그래도 방은 쓸 수 있게 따로 처리한다
   cloud.unsubs.push(t.collection('calls').onSnapshot(snap => {
-    cloud.docs.calls = new Map(snap.docs.map(d => [d.id, d.data()]));
+    cloud.docs.calls = cleanDocs(snap, cleanCall);
     rebuildState();
   }, err => {
     console.error(err);
@@ -274,7 +283,7 @@ function startPresence(teamId) {
   presenceTimer = setInterval(beat, PRESENCE_EVERY_MS);
   presenceExpiryTimer = setInterval(() => rebuildState(), 60 * 1000); // 오래된 접속 정리 (읽기 없음)
   cloud.unsubs.push(ref.onSnapshot(snap => {
-    cloud.docs.presence = new Map(snap.docs.map(d => [d.id, d.data()]));
+    cloud.docs.presence = new Map(snap.docs.map(d => [d.id, { memberId: isId(d.data().memberId) ? d.data().memberId : null, at: finite(d.data().at) }]));
     rebuildState();
   }, () => { cloud.docs.presence = new Map(); }));
 }
@@ -298,7 +307,28 @@ function stubFromMeta(id, m) {
 }
 
 function teamFields(src) {
-  return { teamName: src.teamName, course: src.course || '', members: src.members || [], decisionDismissed: src.decisionDismissed || [], links: src.links || {} };
+  return { teamName: src.teamName, course: src.course || '', decisionDismissed: src.decisionDismissed || [], links: src.links || {} };
+}
+
+// 명단 = 예전 방의 members 배열 + roster 문서 (같은 팀원이면 roster가 우선, 새 칸은 뒤에 만든 순서로)
+function mergeRoster(legacy, roster) {
+  const out = (legacy || []).map(m => roster.get(m.id) || m);
+  const known = new Set(out.map(m => m.id));
+  const added = [...roster.values()].filter(m => !known.has(m.id)).sort((a, b) => finite(a.at) - finite(b.at));
+  return [...out, ...added];
+}
+
+// 예전 방 옮기기: 내 칸은 각자, 나머지 칸은 팀장이 roster 문서로 쓴다
+function migrateRoster() {
+  const d = cloud.docs;
+  const legacy = d.team?.members || [];
+  if (!legacy.length || cloud.rosterMoved || !cloud.roleDoc?.memberId) return;
+  cloud.rosterMoved = true;
+  const t = teamRef();
+  legacy.forEach(m => {
+    if (d.roster.has(m.id) || !(cloud.owner || m.id === cloud.roleDoc.memberId)) return;
+    t.collection('roster').doc(m.id).set(m).catch(e => console.warn('명단 옮기기 실패', e));
+  });
 }
 
 // 스냅샷들을 앱이 쓰는 state 하나로 합친다
@@ -306,17 +336,22 @@ function rebuildState() {
   if (!state?.teamId || !cloud.loaded) return;
   const d = cloud.docs;
   Object.assign(state, teamFields(d.team));
+  state.members = mergeRoster(d.team.members, d.roster);
+  cloud.synced.roster = Object.fromEntries(state.members.map(m => [m.id, stableStr(m)]));
   cloud.owner = d.team.ownerUid === authUser.uid;
   // 명단에는 연결돼 있는데 역할 문서에 팀원 id가 없으면 (나갔다가 다시 들어온 경우 등) 채운다
   const mine = state.members.find(m => m.uid === authUser.uid);
   if (mine && cloud.roleDoc?.role === 'student' && cloud.roleDoc.memberId == null) cloudSetMemberId(mine.id);
   ensureMyClaim();
+  migrateRoster();
   const serverTeam = teamFields(d.team);
   cloud.synced.team = Object.fromEntries(Object.keys(serverTeam).map(k => [k, stableStr(serverTeam[k])]));
 
-  const full = new Map([...d.itemsTeam, ...d.itemsProf, ...d.itemsMine].map(([id, it]) => [id, { votes: [], table: null, ...it }]));
+  // 명단에 없는 팀원의 기록은 화면이 읽지 못하므로 뺀다 (지우는 것이 아니다: synced에서도 빼서 삭제로 보지 않는다)
+  const known = new Set(state.members.map(m => m.id));
+  const full = new Map([...d.itemsTeam, ...d.itemsProf, ...d.itemsMine].filter(([, it]) => known.has(it.memberId)).map(([id, it]) => [id, { votes: [], table: null, ...it }]));
   const items = [];
-  d.meta.forEach((m, id) => items.push(full.has(id) ? { ...full.get(id) } : stubFromMeta(id, m)));
+  d.meta.forEach((m, id) => { if (known.has(m.memberId)) items.push(full.has(id) ? { ...full.get(id) } : stubFromMeta(id, m)); });
   full.forEach((it, id) => { if (!d.meta.has(id)) items.push({ ...it }); });
   state.items = items;
   cloud.synced.items = Object.fromEntries([...full].map(([id, it]) => [id, stableStr(it)]));
@@ -359,7 +394,7 @@ document.addEventListener('pointerup', () => setTimeout(() => {
 
 // ---------- 바뀐 것만 올리기 (saveState에서 호출) ----------
 
-const OTHERS_ITEM_KEYS = ['table', 'type', 'themes', 'keywords', 'ai']; // 남의 기록에서 바꿀 수 있는 필드 (+ votes)
+const OTHERS_ITEM_KEYS = ['table', 'type', 'themes', 'keywords', 'ai', 'appliedCorrection']; // 남의 기록에서 바꿀 수 있는 필드 (+ votes)
 
 function itemDoc(item) {
   const { _stub, ...doc } = item;
@@ -387,6 +422,13 @@ function cloudPush() {
     changed.forEach(k => { cloud.synced.team[k] = stableStr(tf[k]); });
     t.update(Object.fromEntries(changed.map(k => [k, tf[k]]))).catch(e => writeFailed(e, `방 정보(${changed.join(', ')})`));
   }
+  // 명단은 바뀐 칸만 (규칙상 팀원은 내 칸만 고칠 수 있다)
+  state.members.forEach(m => {
+    const str = stableStr(m);
+    if (cloud.synced.roster[m.id] === str) return;
+    cloud.synced.roster[m.id] = str;
+    t.collection('roster').doc(m.id).set({ ...m, at: m.at ?? Date.now() }).catch(e => writeFailed(e, '명단'));
+  });
 
   const seen = new Set();
   state.items.forEach(item => {
@@ -480,7 +522,7 @@ async function cloudCreateTeamFrom(src) {
   const ref = db.collection('teams').doc();
   try {
     const head = db.batch();
-    head.set(ref, { ...teamFields(ws), ownerUid: authUser.uid, createdAt: Date.now() });
+    head.set(ref, { ...teamFields(ws), members: [], ownerUid: authUser.uid, createdAt: Date.now() });
     head.set(ref.collection('secrets').doc('student'), newInvite());
     head.set(ref.collection('secrets').doc('prof'), newInvite());
     head.set(ref.collection('members').doc(authUser.uid), { uid: authUser.uid, role: 'student', memberId: me.id, code: '', joinedAt: Date.now(), name: authUser.name || '', email: authUser.email || '' });
@@ -488,6 +530,7 @@ async function cloudCreateTeamFrom(src) {
     await head.commit();
 
     const ops = [];
+    ws.members.forEach((m, i) => ops.push([ref.collection('roster').doc(m.id), { ...m, at: i }]));
     ws.items.forEach(it => {
       const item = { ...it, ownerUid: authUser.uid };
       delete item.correctionId;
@@ -497,9 +540,10 @@ async function cloudCreateTeamFrom(src) {
     ws.decisions.forEach(x => ops.push([ref.collection('decisions').doc(x.id), x]));
     ws.quests.forEach(x => ops.push([ref.collection('quests').doc(x.id), x]));
     ws.changeLog.forEach(x => { const id = x.id || uid(); ops.push([ref.collection('logs').doc(id), { ...x, id }]); });
-    for (let i = 0; i < ops.length; i += 400) {
+    // 규칙이 한 묶음에서 읽을 수 있는 문서가 20개라 (기록마다 짝이 되는 문서를 확인한다) 작게 나눠 올린다
+    for (let i = 0; i < ops.length; i += 24) {
       const batch = db.batch();
-      ops.slice(i, i + 400).forEach(([doc, data]) => batch.set(doc, data));
+      ops.slice(i, i + 24).forEach(([doc, data]) => batch.set(doc, data));
       await batch.commit();
     }
     await rememberTeam(ref.id, ws.teamName, 'student');
@@ -537,7 +581,7 @@ async function cloudLeaveTeam(eraseMine = false) {
     if (eraseMine) await eraseMyRecords(t);
     if (mine) {
       delete mine.uid; delete mine.email; delete mine.photo;
-      await t.update(teamFields(state)); // 명단에서 내 연결 풀기 (팀원일 때 해야 함)
+      await t.collection('roster').doc(mine.id).set(mine); // 명단에서 내 연결 풀기 (팀원일 때 해야 함)
     }
     const batch = db.batch();
     if (cloud.roleDoc?.memberId) batch.delete(t.collection('claims').doc(cloud.roleDoc.memberId));
@@ -634,8 +678,8 @@ async function openManageModal() {
       teamRef().collection('members').get(),
       teamRef().collection('accessLogs').get().catch(() => ({ docs: [] })),
     ]);
-    roles = r.docs.map(d => d.data());
-    logs = l.docs.map(d => d.data()).sort((a, b) => b.at - a.at).slice(0, 20);
+    roles = r.docs.map(d => ({ ...d.data(), uid: d.id, role: d.data().role === 'prof' ? 'prof' : 'student', name: asStr(d.data().name), email: asStr(d.data().email) })).filter(x => isId(x.uid));
+    logs = l.docs.map(d => ({ uid: asStr(d.data().uid), email: asStr(d.data().email), what: asStr(d.data().what), at: finite(d.data().at) })).sort((a, b) => b.at - a.at).slice(0, 20);
   } catch (e) {
     closeModal();
     return writeFailed(e, '방 관리');
@@ -727,7 +771,7 @@ async function cloudDeleteTeam() {
     await deleteDocs(meta.docs);
     const mine = await t.collection('items').where('ownerUid', '==', authUser.uid).get(); // 목록에 없던 내 기록
     await deleteDocs(mine.docs);
-    for (const name of ['decisions', 'quests', 'corrections', 'logs', 'accessLogs', 'presence', 'claims']) {
+    for (const name of ['decisions', 'quests', 'corrections', 'logs', 'accessLogs', 'presence', 'claims', 'roster']) {
       step = name;
       await deleteDocs((await t.collection(name).get()).docs);
     }
@@ -780,24 +824,26 @@ async function cloudLoadProfTeams() {
 async function loadProfTeam(id) {
   try {
     const t = teamRef(id);
-    const [team, meta, items, decisions, logs, calls] = await Promise.all([
-      t.get(), t.collection('itemMeta').get(), t.collection('items').where('visibility', '==', 'prof').get(),
+    const [team, roster, meta, items, decisions, logs, calls] = await Promise.all([
+      t.get(), t.collection('roster').get().catch(() => ({ docs: [] })), t.collection('itemMeta').get(), t.collection('items').where('visibility', '==', 'prof').get(),
       t.collection('decisions').get(), t.collection('logs').get(),
       // 팀이 '교수자에게 공유'한 회의 요약만 (녹취 원문은 공유하지 않는다)
       t.collection('calls').where('shareProf', '==', true).get().catch(() => ({ docs: [] })),
     ]);
     if (!team.exists) { await pruneTeamIfGone(id, 'not-found'); return null; }
     const full = new Map(items.docs.map(d => [d.id, d.data()]));
-    const data = team.data();
-    return sanitizeForProf({
+    const data = cleanTeam(team.data());
+    data.members = mergeRoster(data.members, new Map(roster.docs.map(d => [d.id, cleanMember({ ...d.data(), id: d.id })]).filter(([, m]) => m)));
+    const known = new Set(data.members.map(m => m.id));
+    return sanitizeWorkspace(sanitizeForProf({
       teamName: data.teamName,
       course: data.course,
-      members: data.members || [],
-      items: meta.docs.map(d => full.get(d.id) || stubFromMeta(d.id, d.data())),
-      decisions: decisions.docs.map(d => d.data()),
-      changeLog: logs.docs.map(d => d.data()).sort((a, b) => a.at - b.at),
-      calls: calls.docs.map(d => d.data()),
-    });
+      members: data.members,
+      items: meta.docs.map(d => { const m = cleanItemMeta(d.data(), d.id); return m && (cleanItem(full.get(d.id), d.id) || stubFromMeta(d.id, m)); }).filter(i => i && known.has(i.memberId)),
+      decisions: decisions.docs.map(d => cleanDecision(d.data(), d.id)).filter(Boolean),
+      changeLog: logs.docs.map(d => cleanLog(d.data(), d.id)).sort((a, b) => a.at - b.at),
+      calls: calls.docs.map(d => cleanCall(d.data(), d.id)).filter(Boolean),
+    }));
   } catch (e) {
     console.error(e);
     logDenied(id, 'prof-view');
@@ -900,9 +946,9 @@ async function cloudFillInvites() {
     if (!el) return;
     try {
       const snap = await teamRef().collection('secrets').doc(kind).get();
-      el.value = link(snap.data().code, kind);
+      el.value = link(encodeURIComponent(asStr(snap.data().code)), kind);
       const note = document.getElementById(`${elId}Note`);
-      if (note) note.textContent = inviteNote(snap.data().expiresAt);
+      if (note) note.textContent = inviteNote(isNum(snap.data().expiresAt) ? snap.data().expiresAt : null);
     } catch (e) {
       el.value = '초대 링크를 불러올 수 없어요';
     }

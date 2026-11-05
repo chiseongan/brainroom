@@ -9,14 +9,14 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
 function makeApp(fakeFetch, names = ['안치성', '김단유', '박채연']) {
   const store = {};
   const ctx = {
-    console, Date, Math, JSON, Object, Array, Set, Map, String, Number, RegExp, Promise, Error, URL, URLSearchParams, encodeURIComponent,
+    crypto: globalThis.crypto, console, Date, Math, JSON, Object, Array, Set, Map, String, Number, RegExp, Promise, Error, URL, URLSearchParams, encodeURIComponent,
     setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
     fetch: fakeFetch || (async () => { throw new Error('이 시험은 네트워크를 쓰지 않는다'); }),
     localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = String(v); }, removeItem: k => { delete store[k]; } },
     document: { querySelector: () => null, addEventListener() {} }, window: {}, navigator: {},
   };
   vm.createContext(ctx);
-  vm.runInContext(['themes', 'nlp', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport', 'sampleapi'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
+  vm.runInContext(['themes', 'nlp', 'sanitize', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport', 'sampleapi'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
     + `\n;var guestMode = false, authUser = null, cloud = { loaded: true };
     function render() {} function toast() {} function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } function fmtDate() { return ''; } function trunc(s) { return s; }
     async function aiFeature() { return false; }
@@ -136,6 +136,27 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
   console.log('--- 연동 작업 → 물품 (가짜 API)');
   const now = new Date().toISOString();
   const j = body => ({ ok: true, json: async () => body });
+  console.log('--- 데이터 정화');
+  {
+    const bad = '"><img src=x onerror=alert(1)>';
+    const run = code => vm.runInContext(code, T.ctx);
+    const clean = (fn, o, id) => JSON.parse(run(`JSON.stringify(${fn}(${JSON.stringify(o)}${id ? `, ${JSON.stringify(id)}` : ''}))`));
+    const m = clean('cleanMember', { id: 'm1', name: bad, color: bad, photo: bad, connections: { github: bad, figma: 'ok', [bad]: 'ok' }, pinnedIdeaId: bad });
+    ok(/^#[0-9a-f]{6}$/i.test(m.color) && !m.photo && m.pinnedIdeaId === null && JSON.stringify(m.connections) === '{"figma":"ok"}', '팀원: 색·사진·연결 상태 정화');
+    ok(run(`cleanMember(${JSON.stringify({ id: bad })})`) === null, 'id가 잘못된 팀원은 버림');
+    const good = { id: 'x1', memberId: 'm1', type: 'memo', visibility: 'team', title: '제목', content: '내용', url: 'example.com/a', createdAt: 5, keywords: ['다회용기'], themes: ['eco'], votes: ['m1'], table: { x: 1, y: 2 }, ownerUid: 'u1' };
+    ok(JSON.stringify(clean('cleanItem', good)) === JSON.stringify(good), '올바른 기록은 한 글자도 바뀌지 않음');
+    const i = clean('cleanItem', { ...good, type: bad, visibility: bad, url: `javascript:alert(1)`, createdAt: bad, keywords: [bad, 3], themes: [bad, 'eco'], votes: [bad, 'm1'], table: { x: bad, y: 1 } });
+    ok(i.type === 'memo' && i.visibility === 'me' && i.url === '' && i.createdAt === 0 && i.table === null && i.votes.join() === 'm1' && i.themes.join() === 'eco', '기록: 잘못된 칸만 안전한 값으로');
+    ok(clean('cleanItem', good, 'doc1').id === 'doc1', '문서 안의 id 대신 문서 id를 씀');
+    ok(run(`cleanItem(${JSON.stringify({ ...good, memberId: bad })})`) === null, '작성자 id가 잘못된 기록은 버림');
+    for (const u of ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,x', 'vbscript:x', 'https://a.b/"><x', ' javascript:alert(1)']) ok(run(`cleanUrl(${JSON.stringify(u)})`) === '', `주소 거부: ${u}`);
+    for (const u of ['https://a.b/c?d=1', 'http://a.b', 'example.com/a', '']) ok(run(`cleanUrl(${JSON.stringify(u)})`) === u, `주소 허용: ${u || '(빈 값)'}`);
+    const stale = run(`JSON.stringify(sanitizeWorkspace({ members: [{ id: 'm1', name: 'a', color: '#000000' }], items: [{ id: 'a', memberId: 'gone', type: 'memo', visibility: 'team', title: '', content: '', createdAt: 1 }] }))`);
+    ok(JSON.parse(stale).items.length === 0, '명단에 없는 팀원의 기록은 파일에서 뺌');
+    ok(/^[a-z0-9]+$/.test(run('uid()')), '기록 id 형식');
+  }
+
   const G = makeApp(async url => {
     const u = new URL(url);
     if (u.pathname.endsWith('/commits')) return j([{ sha: 'a'.repeat(40), html_url: 'https://github.com/x', commit: { message: 'fix(auth): 로그인 오류 수정\n\nCo-Authored-By: Claude <x@y>', author: { date: now } } }, { sha: 'b'.repeat(40), html_url: 'https://github.com/y', commit: { message: '발표 자료 정리', author: { date: now } } }]);

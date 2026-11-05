@@ -13,7 +13,7 @@ const env = await initializeTestEnvironment({
 
 let pass = 0, fail = 0;
 const quiet = fn => fn().catch(() => {});
-async function allow(name, p) { try { await assertSucceeds(p); pass++; console.log(`PASS  ${name}`); } catch (e) { fail++; console.log(`FAIL  ${name} (거절됨: ${e.message.slice(0, 200)})`); } }
+async function allow(name, p) { try { await assertSucceeds(p); pass++; console.log(`PASS  ${name}`); } catch (e) { fail++; console.log(`FAIL  ${name} (거절됨: ${e.message.replace(/s+/g, ' ').slice(0, 300)})`); } }
 async function deny(name, p) { try { await assertFails(p); pass++; console.log(`PASS  ${name}`); } catch (e) { fail++; console.log(`FAIL  ${name} (허용되면 안 됨)`); } }
 
 const T = 'T';
@@ -26,6 +26,7 @@ const prof = () => as('uProf');
 const stranger = () => as('uStranger');
 const anon = () => env.unauthenticatedContext().firestore();
 
+const ROSTER = [{ id: 'mO', name: '팀장', color: '#111111', uid: 'uOwner' }, { id: 'mA', name: '에이미', color: '#222222', uid: 'uAmy' }, { id: 'mB', name: '벤', color: '#333333', uid: 'uBen' }, { id: 'mFree', name: '빈자리', color: '#444444' }];
 const record = (id, memberId, ownerUid, visibility, extra = {}) => ({
   id, memberId, ownerUid, visibility, type: 'memo', title: `기록 ${id}`, content: '내용', url: '', createdAt: 1, votes: [], table: null, ...extra,
 });
@@ -36,7 +37,7 @@ async function seed() {
   await env.withSecurityRulesDisabled(async ctx => {
     const db = ctx.firestore();
     const t = p => doc(db, `teams/${T}${p}`);
-    await setDoc(doc(db, `teams/${T}`), { teamName: '호랑이양말', course: '소공', ownerUid: 'uOwner', members: [{ id: 'mO', name: '팀장', uid: 'uOwner' }, { id: 'mA', name: '에이미', uid: 'uAmy' }, { id: 'mB', name: '벤', uid: 'uBen' }, { id: 'mFree', name: '빈자리' }], decisionDismissed: [], links: {} });
+    await setDoc(doc(db, `teams/${T}`), { teamName: '호랑이양말', course: '소공', ownerUid: 'uOwner', members: ROSTER, decisionDismissed: [], links: {} });
     await setDoc(t('/secrets/student'), { code: 'student-code-123456' });
     await setDoc(t('/secrets/prof'), { code: 'prof-code-1234567890' });
     await setDoc(t('/members/uOwner'), { uid: 'uOwner', role: 'student', memberId: 'mO', code: '', joinedAt: 1 });
@@ -61,6 +62,8 @@ async function seed() {
     await setDoc(t('/calls/c1/peers/uBen'), { uid: 'uBen', joinedAt: 1, beat: 1 });
     await setDoc(t('/calls/c1/signals/s1'), { from: 'uAmy', to: 'uBen', type: 'offer', data: {}, at: 1 });
     await setDoc(t('/logs/log1'), { at: 1, text: '변경 이력' });
+    await setDoc(t('/corrections/corrAi'), { id: 'corrAi', kind: 'reclass', memberId: 'mA', requesterUid: 'uAmy', status: 'pending', itemId: 'iAi', type: 'ai' });
+    await setDoc(t('/corrections/corrTeam'), { id: 'corrTeam', kind: 'reclass', memberId: 'mA', requesterUid: 'uAmy', status: 'pending', itemId: 'iTeam', type: 'ai' });
     await setDoc(t('/corrections/corr1'), { id: 'corr1', kind: 'missing', memberId: 'mA', requesterUid: 'uAmy', status: 'pending', confirmedBy: null, type: 'memo', title: 'x' });
     await setDoc(t('/decisions/d1'), { id: 'd1', text: '결정', sourceIds: [] });
     await setDoc(t('/quests/q1'), { id: 'q1', title: '퀘스트' });
@@ -141,18 +144,76 @@ await deny('작성 시각이 숫자가 아니면 거절', setDoc(p(ben(), '/item
 await allow('투표는 다른 팀원도', updateDoc(p(ben(), '/items/iTeam'), { votes: arrayUnion('mB') }));
 await deny('다른 팀원은 내용을 못 고친다', updateDoc(p(ben(), '/items/iTeam'), { content: '변조' }));
 await deny('다른 팀원은 공유 범위를 못 바꾼다', updateDoc(p(ben(), '/items/iTeam'), { visibility: 'me' }));
-await deny('다른 팀원은 AI 대화 원문을 못 고친다', updateDoc(p(ben(), '/items/iAi'), { ai: { tool: 'ChatGPT', purpose: 'research', transcript: '변조' } }));
-await allow('다른 팀원은 AI 사용 목적을 보정할 수 있다', updateDoc(p(ben(), '/items/iAi'), { ai: { tool: 'ChatGPT', purpose: 'code', transcript: '원문' } }));
-await allow('보정으로 AI 대화가 될 때 ai 칸을 만들 수 있다', updateDoc(p(ben(), '/items/iTeam'), { type: 'ai', ai: { tool: '', purpose: 'etc', transcript: 'x' } }));
-await deny('작성자도 작성자를 바꿀 수 없다', updateDoc(p(amy(), '/items/iTeam'), { ownerUid: 'uBen' }));
-await deny('남의 기록을 지울 수 없다', deleteDoc(p(ben(), '/items/iTeam')));
-await allow('내 기록은 지운다', deleteDoc(p(amy(), '/items/iTeam')));
+await deny('보정 요청 없이는 분류를 못 바꾼다', updateDoc(p(ben(), '/items/iTeam'), { type: 'idea' }));
+await deny('보정 요청 없이는 키워드를 못 바꾼다', updateDoc(p(ben(), '/items/iTeam'), { keywords: ['가짜'] }));
+await deny('다른 기록의 보정 요청으로는 못 바꾼다', updateDoc(p(ben(), '/items/iTeam'), { type: 'idea', appliedCorrection: 'corrAi' }));
+await deny('보정으로도 AI 대화 원문은 못 고친다', updateDoc(p(ben(), '/items/iAi'), { appliedCorrection: 'corrAi', ai: { tool: 'ChatGPT', purpose: 'research', transcript: '변조' } }));
+await allow('보정 요청을 확인하며 AI 사용 목적을 바꿀 수 있다', updateDoc(p(ben(), '/items/iAi'), { appliedCorrection: 'corrAi', ai: { tool: 'ChatGPT', purpose: 'code', transcript: '원문' } }));
+await allow('보정 요청을 확인하며 AI 대화로 바꿀 수 있다', updateDoc(p(ben(), '/items/iTeam'), { appliedCorrection: 'corrTeam', type: 'ai', ai: { tool: '', purpose: 'etc', transcript: 'x' } }));
+await deny('남의 표를 대신 넣을 수 없다', updateDoc(p(ben(), '/items/iProf'), { votes: arrayUnion('mO') }));
+await deny('다른 사람 표를 지울 수 없다', updateDoc(p(ben(), '/items/iProf'), { votes: [] , table: 'x' }));
+await allow('테이블에 올리기', updateDoc(p(ben(), '/items/iProf'), { table: { x: 10, y: 20 } }));
+await deny('테이블 좌표에 글자를 넣을 수 없다', updateDoc(p(ben(), '/items/iProf'), { table: { x: '"><img>', y: 1 } }));
+await deny('기록 id에 이상한 글자를 넣을 수 없다', setDoc(p(ben(), `/items/${encodeURIComponent('"><img src=x>')}`), record('x', 'mB', 'uBen', 'team')));
+await deny('문서 id와 내용의 id가 달라야 할 이유가 없다', setDoc(p(ben(), '/items/same1'), record('other', 'mB', 'uBen', 'team')));
+await deny('javascript: 주소를 저장할 수 없다', setDoc(p(ben(), '/items/js1'), record('js1', 'mB', 'uBen', 'team', { url: 'javascript:alert(1)' })));
+await deny('javascript: 대소문자 바꿔도 안 됨', setDoc(p(ben(), '/items/js2'), record('js2', 'mB', 'uBen', 'team', { url: 'JaVaScRiPt:alert(1)' })));
+await allow('https 주소는 저장', setDoc(p(ben(), '/items/ok1'), record('ok1', 'mB', 'uBen', 'team', { url: 'https://a.b/c?d=1:2' })));
+await allow('스킴 없는 주소도 저장', setDoc(p(ben(), '/items/ok2'), record('ok2', 'mB', 'uBen', 'team', { url: 'example.com/a' })));
+await deny('미래 시각으로 기록할 수 없다', setDoc(p(ben(), '/items/fut'), record('fut', 'mB', 'uBen', 'team', { createdAt: Date.now() + 3 * 864e5 })));
+const metaOf = (o = {}) => ({ memberId: 'mB', ownerUid: 'uBen', type: 'memo', createdAt: 1, visibility: 'team', purpose: null, correctionId: null, imported: null, ...o });
+await deny('기록 없이 횟수만 늘릴 수 없다', setDoc(p(ben(), '/itemMeta/ghost'), metaOf()));
+{
+  const db2 = ben(), b = writeBatch(db2);
+  b.set(p(db2, '/items/pair'), record('pair', 'mB', 'uBen', 'team'));
+  b.set(p(db2, '/itemMeta/pair'), metaOf());
+  await allow('기록과 횟수는 함께 저장', b.commit());
+}
+await deny('남의 횟수 기록 종류를 바꿀 수 없다', updateDoc(p(ben(), '/itemMeta/iProf'), { type: 'idea' }));
+
+// 명단: 다른 팀원 칸을 건드릴 수 없다
+const team = () => `teams/${T}`;
+const entry = (id, o = {}) => ({ id, name: id, color: '#555555', ...o });
+await deny('예전 명단 배열을 고칠 수 없다', updateDoc(doc(ben(), team()), { members: ROSTER.map(m => (m.id === 'mA' ? { ...m, name: '가짜' } : m)) }));
+await deny('팀장도 예전 명단 배열은 못 고친다', updateDoc(doc(owner(), team()), { members: [] }));
+await deny('명단 배열이 찬 방을 새로 만들 수 없다', setDoc(doc(as('uNew2'), 'teams/N9'), { teamName: 'x', ownerUid: 'uNew2', members: [entry('a', { color: '"><img>' })] }));
+await env.withSecurityRulesDisabled(async ctx => {
+  for (const m of ROSTER) await setDoc(doc(ctx.firestore(), `teams/${T}/roster/${m.id}`), m);
+  await setDoc(doc(ctx.firestore(), `teams/${T}/claims/mC`), { uid: 'uCara', at: 1 });
+});
+const mine = (o = {}) => ({ ...ROSTER[2], ...o });
+await allow('팀원은 명단을 읽는다', getDocs(collection(ben(), `teams/${T}/roster`)));
+await allow('교수자도 명단을 읽는다', getDocs(collection(prof(), `teams/${T}/roster`)));
+await deny('낯선 사람은 명단을 못 읽는다', getDocs(collection(stranger(), `teams/${T}/roster`)));
+await deny('다른 팀원 이름을 바꿀 수 없다', setDoc(p(ben(), '/roster/mA'), { ...ROSTER[1], name: '가짜' }));
+await deny('다른 팀원 칸을 지울 수 없다', deleteDoc(p(ben(), '/roster/mA')));
+await deny('내 칸에 공격 문자열 색을 넣을 수 없다', setDoc(p(ben(), '/roster/mB'), mine({ color: 'red;"><img src=x>' })));
+await deny('내 칸에 낯선 사진 주소를 넣을 수 없다', setDoc(p(ben(), '/roster/mB'), mine({ photo: 'https://evil.example/track.png' })));
+await deny('내 칸의 계정을 남으로 바꿀 수 없다', setDoc(p(ben(), '/roster/mB'), mine({ uid: 'uAmy' })));
+await deny('칸 안의 id를 바꿀 수 없다', setDoc(p(ben(), '/roster/mB'), mine({ id: 'mA' })));
+await deny('새 칸을 남의 계정으로 만들 수 없다', setDoc(p(ben(), '/roster/mNew'), entry('mNew', { uid: 'uAmy' })));
+await deny('칸 id에 이상한 글자를 넣을 수 없다', setDoc(p(ben(), `/roster/${encodeURIComponent('"><img>')}`), entry('"><img>')));
+await deny('주인이 있는 칸을 가로채 새로 만들 수 없다 (옮기기 전 칸)', setDoc(p(ben(), '/roster/mC'), entry('mC')));
+await deny('교수자는 명단을 못 쓴다', setDoc(p(prof(), '/roster/mNew'), entry('mNew')));
+await allow('내 칸은 고칠 수 있다', setDoc(p(ben(), '/roster/mB'), mine({ name: '벤2', connections: { github: 'ok' }, photo: 'https://lh3.googleusercontent.com/a/x=s96' })));
+await allow('내 칸을 연결 해제할 수 있다', setDoc(p(ben(), '/roster/mB'), { id: 'mB', name: '벤', color: '#333333' }));
+await allow('새 팀원 칸을 더할 수 있다', setDoc(p(cara(), '/roster/mNew'), entry('mNew')));
+await allow('주인인 칸을 옮겨 만들 수 있다', setDoc(p(cara(), '/roster/mC'), entry('mC', { uid: 'uCara' })));
+await allow('팀장은 내보낼 때 칸을 정리한다', setDoc(p(owner(), '/roster/mA'), { id: 'mA', name: '에이미', color: '#222222' }));
+await allow('팀장은 칸을 지울 수 있다 (장난으로 만든 칸)', deleteDoc(p(owner(), '/roster/mNew')));
+await allow('팀장은 예전 방의 칸을 옮긴다', setDoc(p(owner(), '/roster/mOld'), entry('mOld')));
 
 // 보정 요청 (RQ-14)
 await seed();
 await deny('자기 보정 요청을 스스로 확인할 수 없다', updateDoc(p(amy(), '/corrections/corr1'), { status: 'applied', confirmedBy: 'mA' }));
 await deny('확인자를 다른 사람으로 남길 수 없다', updateDoc(p(ben(), '/corrections/corr1'), { status: 'applied', confirmedBy: 'mO' }));
 await allow('다른 팀원이 자기 이름으로 확인', updateDoc(p(ben(), '/corrections/corr1'), { status: 'applied', confirmedBy: 'mB' }));
+await deny('처리한 요청을 되돌릴 수 없다', updateDoc(p(owner(), '/corrections/corr1'), { status: 'rejected', confirmedBy: 'mO' }));
+await deny('남의 기여를 대신 보정 요청할 수 없다', setDoc(p(ben(), '/corrections/forged'), { id: 'forged', kind: 'missing', memberId: 'mA', requesterUid: 'uBen', status: 'pending' }));
+await allow('내 기여 보정 요청', setDoc(p(ben(), '/corrections/mine'), { id: 'mine', kind: 'missing', memberId: 'mB', requesterUid: 'uBen', status: 'pending' }));
+await deny('남의 이름으로 변경 이력을 쓸 수 없다', setDoc(p(ben(), '/logs/forged'), { at: 1, text: '위조', by: 'uAmy' }));
+await deny('누가 썼는지 없는 이력은 안 된다', setDoc(p(ben(), '/logs/noby'), { at: 1, text: '위조' }));
+await allow('변경 이력 추가', setDoc(p(ben(), '/logs/mine'), { at: 1, text: '내용', by: 'uBen' }));
 await allow('확인자가 빠진 기여를 요청자 이름으로 추가', setDoc(p(ben(), '/items/fromCorr'), record('fromCorr', 'mA', 'uAmy', 'team', { correctionId: 'corr1' })));
 await deny('변경 이력은 고칠 수 없다', updateDoc(p(amy(), '/logs/log1'), { text: '변조' }));
 await deny('변경 이력은 지울 수 없다', deleteDoc(p(owner(), '/logs/log1')));
@@ -173,6 +234,12 @@ await allow('받는 사람은 연결 정보를 읽는다', getDoc(p(ben(), '/cal
 await deny('끝난 회의를 다시 열 수 없다', updateDoc(p(ben(), '/calls/c1'), { status: 'live' }));
 await allow('진행 중 회의 끝내기', updateDoc(p(ben(), '/calls/live'), { status: 'ended', endedAt: 5, summary: null, closedBy: 'uBen' }));
 await allow('요약 저장', updateDoc(p(ben(), '/calls/live'), { summary: '요약', summaryBy: 'rule', attendees: ['벤'], lineCount: 1 }));
+await deny('저장된 요약을 다른 팀원이 고칠 수 없다', updateDoc(p(ben(), '/calls/c1'), { summary: '조작된 요약' }));
+await deny('다른 사람 이름으로 회의를 끝낼 수 없다', updateDoc(p(ben(), '/calls/live'), { closedBy: 'uAmy' }));
+await deny('시작자·팀장이 아니면 교수자 공유를 못 켠다', updateDoc(p(ben(), '/calls/c2'), { shareProf: true }));
+await allow('시작자는 교수자 공유를 켠다', updateDoc(p(amy(), '/calls/c2'), { shareProf: true }));
+await allow('팀장도 교수자 공유를 끈다', updateDoc(p(owner(), '/calls/c2'), { shareProf: false }));
+await deny('만들 때부터 교수자 공유를 켤 수 없다', setDoc(p(ben(), '/calls/nw'), { id: 'nw', title: 't', status: 'live', startedBy: 'uBen', startedAt: 1, shareProf: true }));
 await deny('회의 시작자를 바꿀 수 없다', updateDoc(p(ben(), '/calls/c1'), { startedBy: 'uBen' }));
 await deny('시작자·팀장이 아니면 회의 기록을 지울 수 없다', deleteDoc(p(ben(), '/calls/c2')));
 await allow('시작자는 회의 녹취를 지운다', deleteDoc(p(amy(), '/calls/c1/lines/l1')));
@@ -183,6 +250,7 @@ await allow('팀장은 회의를 지운다', deleteDoc(p(owner(), '/calls/c1')))
 // ---------- 방 관리 ----------
 await seed();
 await deny('팀원은 초대 코드를 바꿀 수 없다', updateDoc(p(amy(), '/secrets/student'), { code: 'new-code-1234567890' }));
+await deny('짧은 코드로 방을 만들 수 없다', (async () => { const n = as('uShort'), b = writeBatch(n); b.set(doc(n, 'teams/S'), { teamName: 's', ownerUid: 'uShort', members: [] }); b.set(doc(n, 'teams/S/secrets/student'), { code: 'abc' }); await b.commit(); })());
 await deny('짧은 코드로 바꿀 수 없다', updateDoc(p(owner(), '/secrets/student'), { code: 'short' }));
 await deny('만료 기한을 31일 넘게 잡을 수 없다', updateDoc(p(owner(), '/secrets/student'), { code: 'new-code-1234567890', expiresAt: Date.now() + 32 * 864e5 }));
 await deny('팀원은 만료 기한을 늘릴 수 없다', updateDoc(p(amy(), '/secrets/student'), { expiresAt: Date.now() + 864e5 }));
@@ -260,28 +328,32 @@ await env.clearFirestore();
   const o = as('uNew');
   const b = writeBatch(o);
   const tp = 'teams/N';
-  b.set(doc(o, tp), { teamName: '새 방', course: '', ownerUid: 'uNew', members: [{ id: 'm1', name: '나', uid: 'uNew' }], decisionDismissed: [], links: {}, createdAt: 1 });
+  b.set(doc(o, tp), { teamName: '새 방', course: '', ownerUid: 'uNew', members: [], decisionDismissed: [], links: {}, createdAt: 1 });
   b.set(doc(o, `${tp}/secrets/student`), { code: 'aaaaaaaaaaaaaaaaaa' });
   b.set(doc(o, `${tp}/secrets/prof`), { code: 'bbbbbbbbbbbbbbbbbb' });
   b.set(doc(o, `${tp}/members/uNew`), { uid: 'uNew', role: 'student', memberId: 'm1', code: '', joinedAt: 1 });
   b.set(doc(o, `${tp}/claims/m1`), { uid: 'uNew', at: 1 });
   await allow('방 만들기 (팀·코드·역할·claim을 한 번에)', b.commit());
+  await allow('방을 만든 사람이 명단 칸을 쓴다', setDoc(doc(o, `${tp}/roster/m1`), { id: 'm1', name: '나', color: '#123456', uid: 'uNew', at: 0 }));
   await deny('남을 팀장으로 방을 만들 수 없다', setDoc(doc(o, 'teams/N2'), { teamName: 'x', ownerUid: 'uOther' }));
   await deny('삭제 표시가 된 방을 만들 수 없다', setDoc(doc(o, 'teams/N3'), { teamName: 'x', ownerUid: 'uNew', deleting: true }));
-  // 큰 워크스페이스 올리기: 한 묶음 400건도 규칙 평가 한도 안에 들어야 한다
+  // 큰 워크스페이스 올리기: 앱이 쓰는 묶음 크기(24건)가 규칙 평가 한도 안에 들어야 한다
   const big = writeBatch(o);
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 12; i++) {
     big.set(doc(o, `${tp}/items/b${i}`), record(`b${i}`, 'm1', 'uNew', 'team'));
     big.set(doc(o, `${tp}/itemMeta/b${i}`), { memberId: 'm1', ownerUid: 'uNew', type: 'memo', createdAt: 1, visibility: 'team', purpose: null, correctionId: null, imported: null });
   }
-  await allow('한 묶음 400건 올리기', big.commit());
+  await allow('한 묶음 24건 올리기 (기록·횟수 12쌍)', big.commit());
 }
 
 // ---------- 접근 기록 ----------
 await seed();
-await allow('거절된 접근 기록 남기기', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/a2'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 1 }));
-await deny('접근 기록의 이메일을 속일 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/a3'), { uid: 'uStranger', email: 'prof@x.com', what: 'join', at: 1 }));
-await deny('접근 기록에 다른 칸을 넣을 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/a4'), { uid: 'uStranger', email: 's@x.com', what: 'x', at: 1, blob: 'y' }));
+await allow('거절된 접근 기록 남기기', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_join_20261105'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 1 }));
+await deny('같은 날 같은 기록을 쏟아낼 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_join_20261105'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 2 }));
+await deny('임의의 id로 쏟아낼 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/a9'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 1 }));
+await deny('남의 이름 id로 쓸 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uAmy_join_20261105'), { uid: 'uStranger', email: 's@x.com', what: 'join', at: 1 }));
+await deny('접근 기록의 이메일을 속일 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_open_20261105'), { uid: 'uStranger', email: 'prof@x.com', what: 'join', at: 1 }));
+await deny('접근 기록에 다른 칸을 넣을 수 없다', setDoc(p(as('uStranger', 's@x.com'), '/accessLogs/uStranger_view_20261105'), { uid: 'uStranger', email: 's@x.com', what: 'x', at: 1, blob: 'y' }));
 await deny('팀원은 접근 기록을 못 읽는다', getDocs(collection(amy(), `teams/${T}/accessLogs`)));
 await allow('팀장은 접근 기록을 읽는다', getDocs(collection(owner(), `teams/${T}/accessLogs`)));
 

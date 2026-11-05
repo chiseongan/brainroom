@@ -11,7 +11,11 @@ enabled = true
 
 [vars]
 FIREBASE_PROJECT_ID = "brainroom-777b0"
-ALLOWED_ORIGINS = "https://chiseongan.github.io,http://localhost:5173"
+# 개발할 때만 worker/.dev.vars 에 ALLOWED_ORIGINS="http://localhost:5173" 를 넣는다
+ALLOWED_ORIGINS = "https://chiseongan.github.io"
+# 비워 두면 모든 Google 계정. 수업용이면 학교 메일로 좁히세요 (예: "univ.ac.kr")
+ALLOWED_EMAIL_DOMAINS = ""
+TURN_REQUESTS_PER_USER = "30"
 # 비용 상한 (SSRD PR-1: 월 5만 원)
 MONTHLY_BUDGET_KRW = "50000"
 DAILY_BUDGET_KRW = "5000"

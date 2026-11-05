@@ -259,13 +259,14 @@ function applyCorrection(c, confirmerId) {
     if (!item) return false;
     const from = TYPE_META[item.type].label;
     item.type = c.type;
+    item.appliedCorrection = c.id; // 규칙이 이 보정 요청을 보고 분류 변경을 허락한다
     if (c.type === 'ai' && !item.ai) item.ai = aiFields({ tool: detectAiTool(item.url), transcript: item.content, firstPrompt: item.title });
     analyze(item);
     desc = `분류 수정: 「${item.title}」 ${from} → ${TYPE_META[c.type].label}`;
   }
   c.status = 'applied';
   c.confirmedBy = confirmerId;
-  state.changeLog.push({ at: Date.now(), text: `${desc} (요청 ${requester?.name ?? '?'} · 확인 ${member(confirmerId)?.name ?? '?'})` });
+  state.changeLog.push({ at: Date.now(), by: authUser?.uid ?? null, text: `${desc} (요청 ${requester?.name ?? '?'} · 확인 ${member(confirmerId)?.name ?? '?'})` });
   saveState();
   return true;
 }
@@ -368,7 +369,7 @@ function sanitizeForProf(ws) {
 }
 
 function loadProfTeams() {
-  try { return JSON.parse(localStorage.getItem(PROF_KEY)) || []; } catch (e) { return []; }
+  try { return (JSON.parse(localStorage.getItem(PROF_KEY)) || []).map(sanitizeWorkspace); } catch (e) { return []; }
 }
 
 function saveProfTeams(teams) {

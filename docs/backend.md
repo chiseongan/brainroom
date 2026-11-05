@@ -18,12 +18,12 @@
 
 - **역할** `teams/{t}/members/{uid}`: `student` 또는 `prof`. 비밀 초대 코드가 맞고 만료 전이어야 만들 수 있습니다. 기한은 7일이고(규칙 상한 31일) 서버 시각으로 검사합니다. `expiresAt`이 없는 예전 방의 링크는 다시 발급할 때까지 만료되지 않습니다.
 - **팀원 칸** `teams/{t}/claims/{memberId}`: 먼저 만든 계정이 그 칸의 주인입니다. 칸을 고르는 것(`members` 수정)과 claim 만들기는 한 묶음으로 처리되어야 통과합니다. 기록의 작성자 검사는 이 연결을 기준으로 합니다.
+- **명단** `teams/{t}/roster/{memberId}`: 칸마다 문서 하나. 팀원은 내 칸만, 팀장은 모두 고칩니다. 예전 방의 `teams.members` 배열은 읽어서 옮기기만 하고 고칠 수 없습니다.
 - **팀장** `teams/{t}.ownerUid`: 코드 재발급, 내보내기, 넘기기, 방 삭제를 합니다. 넘기기 전에는 나갈 수 없습니다.
 - **방 삭제**: 팀장이 `deleting: true`를 표시해야 남의 기록과 변경 이력을 지울 수 있습니다. 중간에 끊기면 방 관리에서 이어 하거나 취소합니다.
 
 규칙이 막지 못하는 것:
 
-- `teams/{t}.members` 명단은 팀원 누구나 고칠 수 있습니다 (앱이 배열 전체를 씁니다). 이름이나 표시가 바뀔 수는 있어도, 권한은 명단이 아니라 역할 문서와 claim으로 판단하므로 다른 사람 이름으로 기록을 쓸 수는 없습니다.
 - 교수자가 볼 수 있는 항목은 규칙으로 막지만, 교수자 화면의 집계는 앱이 계산합니다.
 - 회의 녹취 한 줄의 `name`, `memberId`는 쓴 사람이 정합니다. Meet 녹취 가져오기에 필요하기 때문입니다.
 
@@ -40,6 +40,8 @@ Cloud Functions를 쓰지 않으므로, 방을 열어 둔 사람의 브라우저
 | 연동 토큰 갱신 | 가져오기 직전, 또는 401 응답 시 | `refreshOAuth` (`js/integrations.js`) |
 
 아무도 방을 열지 않으면 이 작업들은 다음에 누군가 열 때까지 미뤄집니다.
+
+보안 설계와 배포 전 체크리스트는 [security.md](security.md)에 있습니다.
 
 ## 비용과 한도
 
@@ -70,12 +72,13 @@ cd worker && npm install
 npx wrangler login
 npx wrangler kv namespace create USAGE      # 나온 id를 wrangler.toml에 넣기
 npx wrangler secret put ANTHROPIC_API_KEY   # 쓰는 비밀 값만 (목록은 wrangler.toml)
+# 로컬에서 시험하려면 worker/.dev.vars 에 ALLOWED_ORIGINS="http://localhost:5173"
 npx wrangler deploy                         # 나온 주소를 js/ai-config.js의 PROXY_URL에
 ```
 
 OAuth를 쓰려면 각 서비스의 앱 설정에 돌아올 주소(`https://chiseongan.github.io/brainroom/`)를 등록하고, `wrangler.toml`에 공개 client id를 넣습니다. Figma 승인 코드는 30초 뒤 만료되므로, 승인 후 돌아왔을 때 로그인이 풀려 있으면 다시 연결해야 합니다.
 
-**Chrome 확장**: 앱과 별개로 zip으로 전달합니다. `extension/manifest.json`의 버전을 올리고 zip을 다시 만드세요.
+**Chrome 확장**: 앱과 별개로 zip으로 전달합니다. `extension/manifest.json`의 버전을 올리고 `python tools/build_extension_zip.py`로 만드세요. 개발용 localhost 권한은 빠집니다.
 
 **주간 요약**은 저장하지 않고 보는 사람의 브라우저에서 계산합니다 (`weeklySummary`, `js/trace.js`). 규칙과 쓰기 횟수에 영향이 없고, 교수자는 걸러진 데이터로 계산하므로 권한이 그대로 지켜집니다. 규칙 기반이며 AI를 쓰지 않습니다.
 

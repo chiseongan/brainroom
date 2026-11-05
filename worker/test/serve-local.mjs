@@ -14,7 +14,7 @@ const jwk = { ...(await crypto.subtle.exportKey('jwk', publicKey)), kid: 'k1', a
 async function idToken(uid) {
   const now = Math.floor(Date.now() / 1000);
   const head = enc(JSON.stringify({ alg: 'RS256', kid: 'k1', typ: 'JWT' }));
-  const body = enc(JSON.stringify({ aud: PROJECT, iss: `https://securetoken.google.com/${PROJECT}`, sub: uid, iat: now, exp: now + 3600 }));
+  const body = enc(JSON.stringify({ aud: PROJECT, iss: `https://securetoken.google.com/${PROJECT}`, sub: uid, firebase: { sign_in_provider: 'google.com' }, iat: now, exp: now + 3600 }));
   const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', privateKey, new TextEncoder().encode(`${head}.${body}`));
   return `${head}.${body}.${Buffer.from(sig).toString('base64url')}`;
 }

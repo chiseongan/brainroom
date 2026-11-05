@@ -20,6 +20,7 @@ const MODEL = 'claude-haiku-5-5';
 const PRICE_USD_PER_MTOK = { input: 0.10, output: 0.50 }; // 프롬프트 10만 토큰 이하 기준
 const MAX_TEXT_CHARS = 200000;
 const MAX_BODY_BYTES = 1024 * 1024; // 한글 20만 자 + 여유
+const TURN_TTL_SECONDS = 4 * 3600;
 const PURPOSES = ['research', 'draft', 'code', 'translate', 'idea', 'etc'];
 
 // ---------- 응답 도우미 ----------
@@ -36,8 +37,9 @@ function corsHeaders(req, env) {
   };
 }
 
+// 토큰·자격이 담길 수 있으므로 어디에도 캐시하지 않는다
 const json = (req, env, body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', ...corsHeaders(req, env) } });
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...corsHeaders(req, env) } });
 
 const allowedOrigins = env => (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 
@@ -91,6 +93,12 @@ async function verifyFirebaseUser(req, env) {
   if (!okSig || payload.aud !== pid || payload.iss !== `https://securetoken.google.com/${pid}` || !payload.sub || payload.exp <= now || payload.iat > now + 300) {
     throw new HttpError(401, 'bad_token');
   }
+  // Google 로그인만 받는다 (콘솔에서 익명 로그인 등이 켜져도 비용을 쓰는 계정을 마음대로 만들 수 없게)
+  if (payload.firebase?.sign_in_provider !== 'google.com') throw new HttpError(403, 'provider_not_allowed');
+  // 쓸 수 있는 메일 도메인을 정했으면 그것만 (예: 학교 메일)
+  const domains = (env.ALLOWED_EMAIL_DOMAINS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  const domain = String(payload.email || '').split('@')[1]?.toLowerCase();
+  if (domains.length && !(payload.email_verified === true && domains.includes(domain))) throw new HttpError(403, 'email_not_allowed');
   return { uid: payload.sub, email: payload.email || '' };
 }
 
@@ -186,7 +194,7 @@ async function callClaude(env, user, params) {
     if (e instanceof HttpError) throw e;
     if (e instanceof Anthropic.RateLimitError) throw new HttpError(429, 'llm_rate_limited');
     if (e instanceof Anthropic.AuthenticationError) throw new HttpError(503, 'llm_auth');
-    if (e instanceof Anthropic.BadRequestError) throw new HttpError(400, 'llm_bad_request', e.message);
+    if (e instanceof Anthropic.BadRequestError) { console.error('llm_bad_request', e.message); throw new HttpError(400, 'llm_bad_request'); } // 내부 오류 내용은 밖으로 내지 않는다
     if (e instanceof Anthropic.APIError) throw new HttpError(502, 'llm_error', `${e.status}`);
     throw e;
   }
@@ -333,17 +341,23 @@ async function oauthRefresh(req, env, provider) {
 
 // ---------- 회의 중계 서버 (Cloudflare Realtime TURN) ----------
 
-async function turnCredentials(env) {
+// 자격은 중계 트래픽(비용)을 쓸 수 있으므로 사람당 하루 횟수를 제한하고 수명을 회의 길이로 줄인다
+async function turnCredentials(env, user) {
   if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) throw new HttpError(503, 'turn_not_configured');
+  const store = usageStore(env);
+  const key = `t:${new Date().toISOString().slice(0, 10)}:${user.uid}`;
+  const used = Number(await store.get(key) || 0);
+  if (used >= Number(env.TURN_REQUESTS_PER_USER || 30)) throw new HttpError(429, 'turn_limit', '오늘 회의 중계 요청을 다 썼어요');
+  await store.put(key, String(used + 1));
   const res = await fetch(env.TURN_URL || `https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ttl: 43200 }),
+    body: JSON.stringify({ ttl: TURN_TTL_SECONDS }),
   });
   if (!res.ok) throw new HttpError(502, 'turn_failed');
   const data = await res.json();
   const servers = Array.isArray(data.iceServers) ? data.iceServers : [data.iceServers];
-  return { iceServers: servers.filter(Boolean), ttl: 43200 };
+  return { iceServers: servers.filter(Boolean), ttl: TURN_TTL_SECONDS };
 }
 
 // ---------- 라우터 ----------
@@ -376,7 +390,7 @@ export default {
       const oauth = pathname.match(/^\/v1\/oauth\/([a-z]+)(\/refresh)?$/);
       if (req.method === 'POST' && oauth) return json(req, env, await (oauth[2] ? oauthRefresh : oauthExchange)(req, env, oauth[1]));
       if (req.method === 'GET' && pathname === '/v1/usage') return json(req, env, await usage(env, user));
-      if (req.method === 'GET' && pathname === '/v1/turn') return json(req, env, await turnCredentials(env));
+      if (req.method === 'GET' && pathname === '/v1/turn') return json(req, env, await turnCredentials(env, user));
       throw new HttpError(404, 'not_found');
     } catch (e) {
       if (e instanceof HttpError) return json(req, env, { error: e.code, message: e.message }, e.status);

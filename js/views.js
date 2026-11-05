@@ -234,7 +234,7 @@ function weeklyCardHTML(ws) {
   const from = weeklyFrom ?? weekStart(thisWeek - 864e5);
   const w = weeklySummary(ws, from);
   const typeLine = Object.entries(w.byType).map(([t, n]) => `${TYPE_META[t]?.icon || ''} ${TYPE_META[t]?.label || t} ${n}`).join(' · ');
-  const purposeLine = Object.entries(w.purposes).map(([p, n]) => `${PURPOSE_BY_ID[p]?.label || p} ${n}`).join(' · ');
+  const purposeLine = Object.entries(w.purposes).map(([p, n]) => `${PURPOSE_BY_ID[p]?.label || '기타'} ${n}`).join(' · ');
   return `
   <article class="card weekly-card">
     <header class="weekly-head">
