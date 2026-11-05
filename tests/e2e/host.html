@@ -87,6 +87,8 @@ let axeSource = null;
 async function axeCheck(w, where) {
   axeSource ??= await (await fetch('/e2e/axe.js')).text();
   if (!w.axe) w.eval(axeSource);
+  // 나타나는 중에는 글자가 흐려서 색 대비를 잘못 잰다: 끝나는 애니메이션을 기다린다
+  await w.eval(`Promise.all(document.getAnimations().filter(a => a.effect.getComputedTiming().iterations !== Infinity).map(a => a.finished.catch(() => {})))`);
   const v = JSON.parse(await w.eval(`axe.run({ exclude: [['.toast.out']] }, { resultTypes: ['violations'] }).then(r => JSON.stringify(r.violations.map(v => ({ id: v.id, impact: v.impact, n: v.nodes.length, ex: v.nodes[0].target.join(' ').slice(0, 60), why: (v.nodes[0].any[0]?.message || '').slice(0, 100) }))))`));
   ok(!v.length, `접근성(axe): ${where}${v.length ? ` → ${v.map(x => `${x.id}×${x.n} ${x.ex} ${x.id === 'color-contrast' ? x.why : ''}`).join(' | ')}` : ''}`);
 }
