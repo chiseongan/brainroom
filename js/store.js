@@ -61,7 +61,7 @@ function newMember(name, index) {
 
 function newWorkspace(teamName, names, course = '') {
   const members = names.map(newMember);
-  return migrate({ version: 1, teamName, course, members, items: [], meId: members[0]?.id ?? null, view: 'meeting', roomId: null });
+  return migrate({ version: 1, teamName, course, members, items: [], meId: members[0]?.id ?? null, view: 'workspace', roomId: null });
 }
 
 function addMember(name) {

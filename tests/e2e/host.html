@@ -242,9 +242,9 @@ async function scenarioRoom() {
   A.document.querySelector(`.room-card[data-member="${mC}"]`).click();
   await until(() => A.eval(`state.view === 'room' && state.roomId === '${mC}'`), 3000);
   ok(A.eval(`state.roomId === '${mC}'`), '전체 보기 카드로 이동');
-  A.document.querySelector('#nav [data-go="room"]').click();
+  A.eval(`go('room', state.meId)`); // 방/오피스는 이제 nav가 아닌 공간(베타)에서 접근
   await until(() => A.eval(`state.view === 'room' && (state.roomId === state.meId || !state.roomId)`), 3000);
-  ok(A.eval(`state.view === 'room' && (state.roomId === state.meId || !state.roomId)`), '상단 메뉴로 내 방 이동');
+  ok(A.eval(`state.view === 'room' && (state.roomId === state.meId || !state.roomId)`), '내 방으로 이동 (공간)');
   // 온라인 갱신이 오는 중에도 방이 유지된다
   B.eval(`addItem({ memberId: state.meId, type: 'memo', title: '방 이동 중 갱신', content: '내용', visibility: 'team' })`);
   await until(() => A.eval(`state.items.some(i => i.title === '방 이동 중 갱신')`));
@@ -1098,6 +1098,24 @@ async function scenarioRail() {
   closeFrame('uA');
 }
 
+// 내비게이션: 코크핏 기본 화면 + 공간(베타) 분리
+async function scenarioNav() {
+  say('\n=== 내비게이션: 코크핏 기본 + 공간(베타)');
+  closeAll();
+  const A = await open('uA');
+  // 데모(게스트)는 미로그인 상태 — 로그인 사용자를 비워 게스트 샘플 진입을 재현
+  await A.eval('{ authUser = null; guestMode = true; cloud.showSetup = false; state = sampleWorkspace(); render(); }');
+  ok(await A.eval('state.view === "workspace" && !!document.querySelector(".feed")'), '데모 기본 화면이 코크핏(피드)');
+  ok(await A.eval('!!document.querySelector("#nav [data-go=\\"workspace\\"]")'), '내비에 워크스페이스 탭');
+  ok(await A.eval('[...document.querySelectorAll("#nav button")].some(b => /공간/.test(b.textContent))'), '내비에 공간(베타)');
+  await A.eval('[...document.querySelectorAll("#nav button")].find(b => /공간/.test(b.textContent)).click();');
+  ok(await A.eval('!!document.querySelector(".hall .iso") || !!document.querySelector(".iso")'), '공간(베타) 클릭 시 iso 씬 렌더');
+  await A.eval('document.querySelector("#nav [data-go=\\"workspace\\"]").click();');
+  ok(await A.eval('state.view === "workspace" && !!document.querySelector(".feed")'), '워크스페이스로 복귀');
+  await axeCheck(A, '코크핏 기본 내비');
+  closeFrame('uA');
+}
+
 async function run() {
   if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
   if (ONLY === 'consent') { await scenarioConsent(); await scenarioDelete(); closeAll(); return; }
@@ -1106,7 +1124,8 @@ async function run() {
   if (ONLY === 'landing') { await scenarioLanding(); closeAll(); return; }
   if (ONLY === 'cockpit') { await scenarioCockpit(); closeAll(); return; }
   if (ONLY === 'rail') { await scenarioRail(); closeAll(); return; }
-  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); await scenarioCockpit(); await scenarioRail(); }
+  if (ONLY === 'nav') { await scenarioNav(); closeAll(); return; }
+  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); await scenarioCockpit(); await scenarioRail(); await scenarioNav(); }
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
     await scenarioCalls(ctx);

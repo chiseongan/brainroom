@@ -39,7 +39,7 @@ function timeAgo(ts) {
   return `${Math.floor(min / 1440)}일 전`;
 }
 
-const STUDENT_VIEWS = ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations'];
+const STUDENT_VIEWS = ['workspace', 'meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations'];
 
 function go(view, roomId = null) {
   if (isProfView() && STUDENT_VIEWS.includes(view)) {
@@ -680,7 +680,7 @@ function importWorkspace(file) {
         const ids = new Set(data.items.map(i => i.id));
         data.items.push(...state.items.filter(i => i.visibility === 'me' && !ids.has(i.id)));
       }
-      state = { ...data, view: 'meeting', roomId: null, viewer: 'student', meId: sameTeam ? state.meId : data.meId };
+      state = { ...data, view: 'workspace', roomId: null, viewer: 'student', meId: sameTeam ? state.meId : data.meId };
       if (!member(state.meId)) state.meId = state.members[0]?.id;
       saveState();
       closeModal();
@@ -749,6 +749,7 @@ function render() {
   }
   renderTopbar();
   if (isProfView()) renderProfessor();
+  else if (state.view === 'workspace') renderWorkspace();
   else if (state.view === 'room') renderRoom(state.roomId || state.meId);
   else if (state.view === 'office') renderOffice();
   else if (state.view === 'timeline') renderTimeline();
@@ -790,7 +791,7 @@ document.addEventListener('click', e => {
       if (!won) return render();
       claimMember(id, authUser);
       toast(`${member(id).name}님의 방에 연결됐어요`);
-      go('meeting');
+      go('workspace');
     });
   }
 
