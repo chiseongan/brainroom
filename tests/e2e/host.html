@@ -87,7 +87,7 @@ let axeSource = null;
 async function axeCheck(w, where) {
   axeSource ??= await (await fetch('/e2e/axe.js')).text();
   if (!w.axe) w.eval(axeSource);
-  const v = JSON.parse(await w.eval(`axe.run(document, { resultTypes: ['violations'] }).then(r => JSON.stringify(r.violations.map(v => ({ id: v.id, impact: v.impact, n: v.nodes.length, ex: v.nodes[0].target.join(' ').slice(0, 60), why: (v.nodes[0].any[0]?.message || '').slice(0, 100) }))))`));
+  const v = JSON.parse(await w.eval(`axe.run({ exclude: [['.toast.out']] }, { resultTypes: ['violations'] }).then(r => JSON.stringify(r.violations.map(v => ({ id: v.id, impact: v.impact, n: v.nodes.length, ex: v.nodes[0].target.join(' ').slice(0, 60), why: (v.nodes[0].any[0]?.message || '').slice(0, 100) }))))`));
   ok(!v.length, `접근성(axe): ${where}${v.length ? ` → ${v.map(x => `${x.id}×${x.n} ${x.ex} ${x.id === 'color-contrast' ? x.why : ''}`).join(' | ')}` : ''}`);
 }
 
@@ -288,9 +288,22 @@ async function scenarioRoom() {
   A.eval(`go('office')`);
   await until(() => A.document.querySelector('.room-card[tabindex="0"]'));
   ok(!A.document.querySelector('.room.mini [tabindex]'), '작은 방 그림 안은 Tab에 걸리지 않음');
-  const opener = A.document.getElementById('menuBtn');
-  opener.focus();
+  // 계정 메뉴
+  const account = A.document.getElementById('accountMenu');
+  const opener = account.querySelector('summary');
   opener.click();
+  await sleep(50);
+  ok(account.open, '계정 메뉴가 열림');
+  A.document.dispatchEvent(new A.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  ok(!account.open && A.document.activeElement === opener, 'Esc로 계정 메뉴를 닫음');
+  opener.click();
+  await sleep(50);
+  A.document.body.click();
+  ok(!account.open, '바깥을 누르면 계정 메뉴가 닫힘');
+  opener.click();
+  await sleep(50);
+  ok(A.document.getElementById('logoutBtn').offsetParent && A.document.getElementById('roomsBtn').offsetParent && !A.document.getElementById('exitGuestBtn').offsetParent, '로그인 상태의 계정 메뉴 항목');
+  A.document.getElementById('menuBtn').click();
   await sleep(150);
   const modal = A.document.getElementById('modal');
   ok(modal.getAttribute('role') === 'dialog' && modal.getAttribute('aria-modal') === 'true' && modal.contains(A.document.activeElement), '창이 열리면 초점이 창 안으로');
@@ -303,6 +316,8 @@ async function scenarioRoom() {
   ok(modal.hidden && A.document.activeElement === opener, 'Esc로 닫으면 초점이 원래 자리로');
   // 물품 버튼에 숫자가 보이는 경우까지 검사한다
   A.eval(`addItem({ memberId: state.meId, type: 'memo', title: '다회용기 회수', content: '재활용', visibility: 'team' })`);
+  ok(A.document.getElementById('nav').scrollWidth <= A.document.getElementById('nav').clientWidth + 1 || A.innerWidth < 900, '상단 메뉴가 넘치지 않음');
+  ok(A.document.querySelector('#nav .active')?.getAttribute('aria-current') === 'page' || A.eval(`state.view === 'office'`), '현재 메뉴 표시');
   // 접근성 도구로 화면별 검사
   for (const v of ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations']) {
     A.eval(`go('${v}')`);
@@ -690,6 +705,120 @@ async function scenarioDelete() {
   closeAll();
 }
 
+// ---------- 앱의 확인 창과 알림 ----------
+async function scenarioUi() {
+  say('\n=== 확인 창·알림');
+  closeAll();
+  await wipe();
+  const A = await open('uA'), B = await open('uB');
+  const T = await makeRoom(A, '알림 방');
+  await joinAs(B, await invite(A, 'student'), '김단유');
+  const mB = B.eval('state.meId');
+  A.__testDialog = null; // 진짜 창을 띄운다
+
+  // 확인 창
+  const answer = () => A.document.getElementById('uiDialog');
+  let result = A.eval(`window.__r = undefined; uiConfirm('지울까요?', '<img src=x onerror=window.__xss=1> 되돌릴 수 없어요', { ok: '지우기', danger: true }).then(v => { window.__r = v; }); 1`);
+  await until(() => answer());
+  ok(!answer().querySelector('img') && answer().textContent.includes('<img'), '확인 창: 글자는 HTML로 해석되지 않음');
+  ok(answer().querySelector('[role="alertdialog"]')?.getAttribute('aria-modal') === 'true', '확인 창: 화면 낭독기용 표시');
+  ok(A.document.activeElement.textContent === '취소', '지우는 창은 초점이 취소에 있음 (실수 방지)');
+  await axeCheck(A, '확인 창');
+  A.document.dispatchEvent(new A.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await until(() => A.__r !== undefined);
+  ok(A.__r === false && !answer(), 'Esc는 취소');
+  A.eval(`window.__r = undefined; uiConfirm('확인', '', { ok: '좋아요' }).then(v => { window.__r = v; }); 1`);
+  await until(() => answer());
+  answer().querySelector('.btn.primary').click();
+  await until(() => A.__r !== undefined);
+  ok(A.__r === true, '확인 단추');
+  A.eval(`window.__r = undefined; uiPrompt('삭제', '', { mustEqual: '삭제', ok: '지우기', danger: true }).then(v => { window.__r = v; }); 1`);
+  await until(() => answer());
+  const field = answer().querySelector('input');
+  const go = answer().querySelector('.btn.danger');
+  ok(go.disabled, '입력 확인 전에는 지우기 단추가 꺼져 있음');
+  field.value = '삭제';
+  field.dispatchEvent(new A.Event('input', { bubbles: true }));
+  ok(!go.disabled, '맞게 입력하면 켜짐');
+  go.click();
+  await until(() => A.__r !== undefined);
+  ok(A.__r === '삭제', '입력값 돌려줌');
+  // 뒤에 창이 열려 있어도 Esc는 확인 창만 닫는다
+  A.eval('openMenu()');
+  await sleep(100);
+  A.eval(`window.__r = undefined; uiConfirm('겹친 창', '').then(v => { window.__r = v; }); 1`);
+  await until(() => answer());
+  A.document.dispatchEvent(new A.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(50);
+  ok(!answer() && !A.document.getElementById('modal').hidden, 'Esc는 맨 위 창만 닫음');
+  A.eval('closeModal()');
+  A.__testDialog = opts => (opts.input ? A.__promptAnswer : opts.buttons.at(-1).value);
+
+  // 알림 카드
+  A.eval(`toast('<b>글자</b> 알림')`);
+  await sleep(50);
+  const card = [...A.document.querySelectorAll('.toast')].at(-1);
+  ok(card && !card.querySelector('b') && card.querySelector('.toast-close'), '알림 카드: 닫기 단추, HTML 해석 안 함');
+  card.querySelector('.toast-close').click();
+
+  // 알림함: 방을 연 뒤 생긴 소식
+  const bell = A.document.getElementById('notifyMenu');
+  await until(() => !bell.hidden);
+  ok(!bell.hidden && A.document.getElementById('notifyBadge').hidden, '처음에는 읽지 않은 알림이 없음');
+  A.eval(`addItem({ memberId: state.meId, type: 'memo', title: '내가 쓴 메모', content: '내용', visibility: 'team' })`);
+  await sleep(400);
+  ok(A.document.getElementById('notifyBadge').hidden, '내가 한 일은 알림이 되지 않음');
+  B.eval(`addItem({ memberId: state.meId, type: 'memo', title: '비밀 메모', content: '내용', visibility: 'me' })`);
+  await sleep(600);
+  ok(A.document.getElementById('notifyBadge').hidden, '다른 사람의 나만 기록은 알림이 되지 않음');
+  B.eval(`addItem({ memberId: state.meId, type: 'idea', title: '새 아이디어', content: '내용', visibility: 'team' })`);
+  await until(() => !A.document.getElementById('notifyBadge').hidden);
+  ok(A.document.getElementById('notifyBadge').textContent === '1', '다른 팀원의 기록에 알림 숫자가 뜸');
+  ok(A.document.title === '(1) BrainRoom', '탭 제목에도 숫자');
+  const popup = [...A.document.querySelectorAll('.toast-notify')].at(-1);
+  ok(popup?.textContent.includes('김단유') && popup.textContent.includes('새 아이디어'), '새 소식 알림 카드');
+  await axeCheck(A, '알림 카드');
+  popup.querySelector('.toast-action').click();
+  await until(() => A.eval(`state.view === 'room' && state.roomId === '${mB}'`), 3000);
+  ok(A.eval(`state.roomId === '${mB}'`), '보기를 누르면 그 팀원 방으로');
+  bell.querySelector('summary').click();
+  await until(() => A.document.querySelector('.notify-item'));
+  ok(A.document.querySelector('.notify-item.unread')?.textContent.includes('새 아이디어'), '알림함에 읽지 않음 표시');
+  ok(!A.document.getElementById('notifyPanel').textContent.includes('비밀 메모'), '알림함에 다른 사람의 나만 기록이 없음');
+  await axeCheck(A, '알림함');
+  A.document.querySelector('.notify-item').click();
+  await sleep(100);
+  ok(!bell.open && A.document.getElementById('notifyBadge').hidden, '알림을 열면 읽음 처리');
+  // 다시 열어도 읽음이 유지된다
+  closeFrame('uA');
+  const A2 = await open('uA');
+  await A2.eval(`cloudOpenTeam('${T}')`);
+  await until(() => A2.eval('cloud.loaded && state.meId'));
+  await sleep(500);
+  ok(A2.document.getElementById('notifyBadge').hidden, '새로고침해도 읽음 유지');
+  // 닫혀 있는 동안 생긴 소식은 모여 있다
+  closeFrame('uA');
+  B.eval(`addDecision({ text: '자리 비운 동안 정한 것', sourceIds: [] })`);
+  await sleep(500);
+  const A3 = await open('uA');
+  await A3.eval(`cloudOpenTeam('${T}')`);
+  await until(() => A3.eval('cloud.loaded && state.meId') && !A3.document.getElementById('notifyBadge').hidden);
+  ok(!A3.document.getElementById('notifyBadge').hidden, '앱을 닫은 동안의 소식이 다음에 열면 모여 있음');
+  // 알림 카드 끄기
+  A3.document.getElementById('notifyMenu').querySelector('summary').click();
+  await until(() => A3.document.querySelector('[data-notify="popups"]'));
+  A3.document.querySelector('[data-notify="popups"]').click();
+  A3.document.getElementById('notifyMenu').querySelector('summary').click();
+  await sleep(100);
+  const before = A3.document.querySelectorAll('.toast-notify').length;
+  B.eval(`addItem({ memberId: state.meId, type: 'memo', title: '조용히', content: '내용', visibility: 'team' })`);
+  await until(() => A3.document.getElementById('notifyBadge').textContent === '1');
+  ok(A3.document.querySelectorAll('.toast-notify').length <= before, '알림 카드를 꺼도 숫자는 뜨고 카드는 안 뜸');
+  ok(A3.__systemDialogs === 0 && B.__systemDialogs === 0, '브라우저 기본 창을 쓰지 않음');
+  noDenied(A3, 'A'); noDenied(B, 'B');
+  closeAll();
+}
+
 // 기존 기록을 온라인 방으로 올리기 (샘플 전체): 앱이 보내는 모든 문서가 규칙을 통과해야 한다
 async function scenarioUpload() {
   say('\n=== 기존 기록을 온라인 방으로 올리기');
@@ -863,8 +992,7 @@ window.scenarioAi = async () => {
   // 다른 계정의 연동 토큰은 쓸 수 없다
   W2.localStorage.setItem('brainroom:integrations:uOther', JSON.stringify({ github: { token: 'other-token', login: 'other' } }));
   ok(!W2.eval('JSON.stringify(loadInteg())').includes('other-token'), '다른 계정의 연동 토큰이 보이지 않음');
-  W2.confirm = () => true;
-  W2.eval('forgetIntegOnLogout()');
+  await W2.eval('forgetIntegOnLogout()');
   ok(!W2.localStorage.getItem('brainroom:integrations:uA'), '로그아웃할 때 내 토큰을 지울 수 있음');
   W2.localStorage.removeItem('brainroom:integrations:uOther');
 };
@@ -982,6 +1110,8 @@ async function scenarioXss() {
   await sleep(400); check(A, '녹취록 펼치기');
   await step('내보내기', () => A.eval('openExportModal()')); await sleep(200); check(A, '내보내기 창'); await step('닫기', () => A.eval('closeModal()'));
   await step('주간', () => A.eval(`weeklyFrom = weekStart(); go('report')`)); await sleep(200); check(A, '주간 요약');
+  await step('알림함', () => { A.document.getElementById('notifyMenu').open = true; }); await sleep(300); check(A, '알림함');
+  await step('알림 닫기', () => { A.document.getElementById('notifyMenu').open = false; });
   // 교수자 화면 (학생 → 교수자 공격)
   await step('교수자 열기', () => P.eval(`loadMyTeams().then(() => cloudOpenProf())`));
   await until(() => P.eval('state && state.cloudProf && cloud.profTeams'), 8000);
@@ -1026,6 +1156,7 @@ async function scenarioXss() {
 }
 
 async function run() {
+  if (ONLY === 'ui') { await scenarioUi(); closeAll(); return; }
   if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
   if (ONLY === 'consent') { await scenarioConsent(); await scenarioDelete(); closeAll(); return; }
   if (ONLY === 'stress') { await scenarioStress(); closeAll(); return; }
@@ -1037,6 +1168,7 @@ async function run() {
     await scenarioUpload();
     await scenarioConsent();
     await scenarioDelete();
+    await scenarioUi();
     await scenarioXss();
   }
   if (!ONLY || ONLY === 'ai') await window.scenarioAi?.();

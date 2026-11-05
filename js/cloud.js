@@ -90,8 +90,8 @@ const userRef = () => db.collection('users').doc(authUser.uid);
 function writeFailed(e, what = '') {
   console.error(what || 'Firestore 저장 실패', e);
   toast(e.code === 'permission-denied'
-    ? `${what ? `${what} 저장이` : '이 작업이'} 거절됐어요. 권한이 없거나 Firebase 콘솔의 Firestore 규칙이 최신(firestore.rules)이 아닐 수 있어요`
-    : '저장하지 못했어요. 인터넷 연결을 확인해 주세요');
+    ? `${what ? `${what} 저장이` : '이 작업이'} 거절됐어요. 권한이 없거나 새로고침이 필요할 수 있어요`
+    : '저장하지 못했어요. 인터넷 연결을 확인해 주세요', { kind: 'error' });
 }
 
 // ---------- 로그인 후 시작 ----------
@@ -115,7 +115,7 @@ async function cloudOnAuth() {
     if (params.get('team')) {
       // 링크를 여는 것만으로 낯선 방에 들어가지 않게 묻는다 (참여하면 팀장에게 내 이름·이메일이 보인다)
       const already = await teamRef(params.get('team')).collection('members').doc(authUser.uid).get().then(s => s.exists).catch(() => false);
-      if (isId(params.get('team')) && (already || confirm(`초대 링크로 ${params.get('as') === 'prof' ? '교수자로 ' : ''}방에 참여할까요?\n\n참여하면 방 사람들에게 내 이름이 보여요. 모르는 사람이 보낸 링크라면 취소하세요.`))) {
+      if (isId(params.get('team')) && (already || await uiConfirm(params.get('as') === 'prof' ? '교수자로 이 방에 참여할까요?' : '이 방에 참여할까요?', '참여하면 방 사람들에게 내 이름이 보여요. 모르는 사람이 보낸 링크라면 취소하세요.', { ok: '참여하기' }))) {
         joined = await cloudJoin(params.get('team'), params.get('code') || '', params.get('as') === 'prof' ? 'prof' : 'student');
       }
       history.replaceState(null, '', location.pathname);
@@ -380,6 +380,7 @@ function rebuildState() {
   state.online = new Set([...(d.presence || new Map()).values()].filter(p => p.memberId && now - p.at < PRESENCE_ONLINE_MS).map(p => p.memberId));
   if (typeof scheduleTalkSync === 'function') scheduleTalkSync(); // 끝난 회의의 내 발언 요약을 내 방에
   if (typeof scheduleCallSweep === 'function') scheduleCallSweep(); // 아무도 남지 않은 회의 정리
+  notifyRefresh(); // 입력 중이라 화면을 다시 그리지 않아도 알림은 바로 갱신한다
   cloud.synced.logs = Object.fromEntries([...d.logs].map(([id, x]) => [id, stableStr(x)]));
   scheduleRender();
 }
@@ -1045,26 +1046,27 @@ document.addEventListener('click', async e => {
     state = loadState();
   } else if (act === 'leave') {
     if (cloud.owner) return cloudLeaveTeam(); // 안내만 하고 나가지 않는다
-    if (!confirm('이 계정만 방에서 나갈까요? 초대 링크로 다시 들어올 수 있어요.')) return;
-    return cloudLeaveTeam(confirm('내가 쓴 기록과 회의에서 한 말도 모두 지울까요?\n\n[확인] 지우고 나가기 (되돌릴 수 없어요)\n[취소] 기록은 방에 남기고 나가기'));
+    const choice = await uiDialog({ title: '이 방에서 나갈까요?', message: '초대 링크로 다시 들어올 수 있어요. 내가 쓴 기록과 회의에서 한 말을 함께 지우면 되돌릴 수 없어요.', cancelValue: 'stay', buttons: [{ label: '취소', value: 'stay' }, { label: '기록 지우고 나가기', value: 'erase', kind: 'danger' }, { label: '기록 남기고 나가기', value: 'keep', kind: 'primary' }] });
+    if (choice === 'stay') return;
+    return cloudLeaveTeam(choice === 'erase');
   } else if (act === 'manage') {
     return openManageModal();
   } else if (act === 'kick') {
-    if (!confirm('이 사람을 방에서 내보낼까요?')) return openManageModal();
+    if (!await uiConfirm('이 사람을 내보낼까요?', '그 사람의 기록은 방에 남고, 더 이상 방을 보거나 쓸 수 없어요.', { ok: '내보내기', danger: true })) return openManageModal();
     await cloudKick(arg);
     return openManageModal();
   } else if (act === 'slot') {
     await teamRef().collection('roster').doc(arg).delete().catch(writeFailed);
     return openManageModal();
   } else if (act === 'rotate') {
-    if (!confirm('초대 링크를 다시 발급할까요? 예전 링크는 바로 막혀요.')) return openManageModal();
+    if (!await uiConfirm('초대 링크를 다시 발급할까요?', '예전 링크는 바로 막혀요. 이미 들어온 사람은 그대로예요.', { ok: '다시 발급' })) return openManageModal();
     await cloudRotateInvite(arg);
     return openManageModal();
   } else if (act === 'owner') {
-    if (!confirm('팀장을 넘길까요? 방 관리와 교수자 링크는 새 팀장만 볼 수 있어요.')) return openManageModal();
+    if (!await uiConfirm('팀장을 넘길까요?', '방 관리와 교수자 링크는 새 팀장만 볼 수 있어요.', { ok: '넘기기', danger: true })) return openManageModal();
     return cloudTransferOwner(arg);
   } else if (act === 'delete') {
-    const typed = prompt(`방을 삭제하면 모든 기록과 녹취가 사라지고 되돌릴 수 없어요.\n삭제하려면 방 이름 "${state.teamName}"을 그대로 입력하세요.`);
+    const typed = await uiPrompt('방을 삭제할까요?', '모든 기록과 녹취가 사라지고 되돌릴 수 없어요.', { ok: '방 삭제', danger: true, label: `방 이름 "${state.teamName}"을 그대로 입력하세요`, mustEqual: state.teamName.trim() });
     if (typed !== state.teamName) { if (typed !== null) toast('방 이름이 달라 삭제하지 않았어요'); return openManageModal(); }
     return cloudDeleteTeam();
   } else if (act === 'undelete') {

@@ -14,13 +14,49 @@ function safeUrl(url) {
   return /^https?:\/\//i.test(clean) ? clean : `https://${clean}`;
 }
 
-function toast(msg) {
+// 알림 카드. kind: 'info' | 'error' | 'notify', action: { label, fn } 누르면 fn을 부르고 닫힌다
+function toast(msg, { kind = 'info', icon = '', sub = '', action = null, ms } = {}) {
+  const box = $('#toasts');
+  while (box.children.length >= 4) box.firstChild.remove(); // 화면을 덮지 않게
   const el = document.createElement('div');
-  el.className = 'toast';
-  el.textContent = msg;
-  $('#toasts').appendChild(el);
-  setTimeout(() => el.classList.add('out'), 2600);
-  setTimeout(() => el.remove(), 3000);
+  el.className = `toast toast-${kind}`;
+  const close = () => { el.classList.add('out'); setTimeout(() => el.remove(), 300); };
+  if (icon) {
+    const i = document.createElement('span');
+    i.className = 'toast-icon';
+    i.setAttribute('aria-hidden', 'true');
+    i.textContent = icon;
+    el.appendChild(i);
+  }
+  const body = document.createElement('div');
+  body.className = 'toast-body';
+  const text = document.createElement('span');
+  text.textContent = msg;
+  body.appendChild(text);
+  if (sub) {
+    const s = document.createElement('span');
+    s.className = 'toast-sub';
+    s.textContent = trunc(sub, 60);
+    body.appendChild(s);
+  }
+  el.appendChild(body);
+  if (action) {
+    const a = document.createElement('button');
+    a.type = 'button';
+    a.className = 'toast-action';
+    a.textContent = action.label;
+    a.addEventListener('click', () => { close(); action.fn(); });
+    el.appendChild(a);
+  }
+  const x = document.createElement('button');
+  x.type = 'button';
+  x.className = 'toast-close';
+  x.setAttribute('aria-label', '알림 닫기');
+  x.textContent = '×';
+  x.addEventListener('click', close);
+  el.appendChild(x);
+  box.appendChild(el);
+  setTimeout(close, ms ?? (kind === 'error' ? 7000 : action ? 6000 : 3500));
 }
 
 function download(filename, text, type) {
@@ -325,8 +361,8 @@ function renderRoom(memberId) {
         <p class="muted hint">책장·포스트잇·화이트보드·소품을 클릭하면 모인 자료를 볼 수 있어요</p>
       </div>
       <aside class="room-side">
+        <h2 class="sr-only">${mine ? '내 방 도구' : '방 정보'}</h2>
         ${mine ? `
-        <h2 class="sr-only">내 방 도구</h2>
         <form id="addForm" class="card add-form">
           <h3>➕ 내 방에 담기</h3>
           <div class="seg">
@@ -636,8 +672,8 @@ function openMenu() {
     download(`brainroom_${state.teamName}.json`, JSON.stringify(shared, null, 2), 'application/json');
   };
   $('#exportProf').onclick = () => download(`brainroom_${state.teamName}_교수자제출.json`, JSON.stringify(sanitizeForProf(state), null, 2), 'application/json');
-  if ($('#resetWs')) $('#resetWs').onclick = () => {
-    if (!confirm('모든 자료가 지워집니다. 초기화할까요?')) return;
+  if ($('#resetWs')) $('#resetWs').onclick = async () => {
+    if (!await uiConfirm('처음부터 다시 시작할까요?', '이 브라우저에 저장된 자료가 모두 지워지고 되돌릴 수 없어요.', { ok: '초기화', danger: true })) return;
     state = null;
     if (!guestMode) try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* 무시 */ }
     closeModal();
@@ -682,36 +718,52 @@ function importWorkspace(file) {
 function renderTopbar() {
   const bar = $('#topbar');
   bar.hidden = false;
-  $('#teamName').textContent = state.teamName + (cloudOn() ? ' · 🌐 온라인' : '');
+  const teamName = $('#teamName');
+  teamName.textContent = state.teamName;
+  teamName.title = `${state.teamName}${cloudOn() ? ' (온라인 방)' : ''}`;
   $('#inviteBtn').hidden = !cloudOn();
   $('#roomsBtn').hidden = !(CLOUD_ENABLED && authUser && !guestMode);
+  $('#exitGuestBtn').hidden = !guestMode;
+  $('#logoutBtn').hidden = !authActive();
   const prof = isProfView();
   $('#nav').hidden = prof;
   $('#profBadge').hidden = !prof;
   document.querySelectorAll('#nav [data-go]').forEach(b => {
     const active = b.dataset.go === state.view && (b.dataset.go !== 'room' || state.roomId === state.meId);
     b.classList.toggle('active', active);
+    if (active) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     if (b.dataset.go === 'room') b.dataset.member = state.meId;
   });
   $('#meSwitch').hidden = authActive();
-  $('#userChip').hidden = !authActive() && !guestMode;
-  if (guestMode) {
-    $('#userChip').innerHTML = '<button class="btn ghost sm" id="exitGuestBtn">체험 끝내고 로그인</button>';
-  }
-  if (authActive()) {
-    // 교수자는 팀원 명단에 없으므로 로그인 계정 이름을 쓴다
-    const me = member(state.meId) || { name: authUser.name, color: '#64748b' };
-    $('#userChip').innerHTML = `
-      ${authUser.photo ? `<img src="${esc(authUser.photo)}" alt="" referrerpolicy="no-referrer">` : `<i class="dot" style="--mc:${me.color}"></i>`}
-      <span title="${esc(authUser.email)}">${esc(me.name)}</span>
-      <button class="btn ghost sm" id="logoutBtn">로그아웃</button>`;
-  }
+  // 교수자는 팀원 명단에 없으므로 로그인 계정 이름을 쓴다
+  const me = member(state.meId) || { name: authUser?.name || '메뉴', color: '#64748b' };
+  const chipName = guestMode ? '체험 중' : authActive() ? me.name : '메뉴';
+  $('#userChip').innerHTML = `
+    ${authActive() && authUser.photo ? `<img src="${esc(authUser.photo)}" alt="" referrerpolicy="no-referrer">` : `<i class="dot" style="--mc:${me.color}"></i>`}
+    <span class="chip-name">${esc(chipName)}</span>`;
+  $('#accountMenu').querySelector('summary').setAttribute('aria-label', `계정 메뉴: ${chipName}`);
+  notifyRefresh();
   if (!authActive()) {
     $('#meSelect').innerHTML = state.members.map(m =>
       `<option value="${m.id}" ${!prof && m.id === state.meId ? 'selected' : ''}>${esc(m.name)}</option>`).join('')
       + `<option value="__prof" ${prof ? 'selected' : ''}>🎓 교수자</option>`;
   }
 }
+
+// 상단 메뉴(계정·알림): 항목을 고르거나 바깥을 누르거나 Esc를 누르면 닫는다. 초점은 메뉴 단추로 돌아온다
+document.addEventListener('click', e => {
+  document.querySelectorAll('.top-menu[open]').forEach(menu => {
+    if (!menu.contains(e.target)) { menu.open = false; return; }
+    if (e.target.closest('.account-list button')) {
+      menu.open = false;
+      menu.querySelector('summary').focus();
+    }
+  });
+}, true);
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  document.querySelectorAll('.top-menu[open]').forEach(menu => { menu.open = false; menu.querySelector('summary').focus(); });
+});
 
 function render() {
   if (!authReady) {
@@ -750,7 +802,7 @@ function render() {
 
 // ---------- 이벤트 ----------
 
-document.addEventListener('click', e => {
+document.addEventListener('click', async e => {
   const t = e.target;
 
   if (t.closest('[data-close]') || t === $('#modal')) return closeModal();
@@ -762,8 +814,7 @@ document.addEventListener('click', e => {
     closePanel();
     closeModal();
     if (CLOUD_ENABLED) clearSession();
-    forgetIntegOnLogout();
-    return signOutUser().then(() => toast('로그아웃했어요'));
+    return forgetIntegOnLogout().then(signOutUser).then(() => toast('로그아웃했어요'));
   }
 
   const claim = t.closest('[data-claim]');
@@ -848,7 +899,7 @@ document.addEventListener('click', e => {
       saveState();
       toast('📌 화이트보드에 고정했어요');
     } else if (act.dataset.act === 'delete') {
-      if (!confirm(`「${item.title}」을(를) 삭제할까요?\n팀·교수자 화면에서 바로 사라지고 이 기기에서도 지워져요.`)) return;
+      if (!await uiConfirm('이 기록을 지울까요?', `「${item.title}」이(가) 팀·교수자 화면에서 바로 사라지고 이 기기에서도 지워져요.`, { ok: '지우기', danger: true })) return;
       deleteItem(item.id);
     }
     return render();

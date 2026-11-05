@@ -33,12 +33,11 @@ function loadInteg() {
 }
 
 // 로그아웃할 때 연결된 도구가 있으면 물어본다 (공용 PC에 토큰을 남기지 않게)
-function forgetIntegOnLogout() {
+async function forgetIntegOnLogout() {
   const c = loadInteg();
   if (!c.github?.token && !c.figma?.token && !c.notion?.token) return;
-  if (confirm('이 브라우저에 저장된 내 연동 토큰도 지울까요?\n공용 PC라면 지우세요.\n\n[확인] 지우기 (다음에 다시 연결)\n[취소] 남겨 두기')) {
-    try { localStorage.removeItem(integKey()); } catch (e) { /* 무시 */ }
-  }
+  const wipe = await uiConfirm('연동 토큰도 지울까요?', '이 브라우저에 내 GitHub·Figma·Notion 토큰이 남아 있어요. 공용 PC라면 지우세요. 다음에 다시 연결하면 돼요.', { ok: '토큰 지우기', cancel: '남겨 두기' });
+  if (wipe) try { localStorage.removeItem(integKey()); } catch (e) { /* 무시 */ }
 }
 
 function saveInteg(next) {

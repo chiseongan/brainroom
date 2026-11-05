@@ -62,7 +62,7 @@ function modalClosed() {
 document.addEventListener('keydown', e => {
   if (e.key !== 'Tab') return;
   const modal = document.getElementById('modal');
-  if (!modal || modal.hidden) return;
+  if (!modal || modal.hidden || document.getElementById('uiDialog')) return;
   const list = [...modal.querySelectorAll(FOCUSABLE)].filter(x => x.offsetParent !== null);
   if (!list.length) return;
   const first = list[0], last = list[list.length - 1];
