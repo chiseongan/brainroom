@@ -1025,10 +1025,25 @@ async function scenarioXss() {
   frameTest.remove();
 }
 
+// 디자인 토대: 콘스텔레이션 다크 테마 토큰이 전역에 깔렸는지 + 공통 셸 접근성
+async function scenarioDesign() {
+  say('\n=== 디자인 토대: 콘스텔레이션');
+  closeAll();
+  const A = await open('uA');
+  const bg = await A.eval('getComputedStyle(document.body).backgroundColor');
+  ok(bg === 'rgb(14, 16, 48)', `페이지 배경이 딥네이비여야 함 (--bg #0e1030) → ${bg}`);
+  const font = await A.eval('getComputedStyle(document.body).fontFamily.toLowerCase()');
+  ok(font.includes('pretendard'), `본문 글꼴 Pretendard 우선 → ${font.slice(0, 60)}`);
+  await axeCheck(A, '시작 셸(콘스텔레이션)');
+  closeFrame('uA');
+}
+
 async function run() {
   if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
   if (ONLY === 'consent') { await scenarioConsent(); await scenarioDelete(); closeAll(); return; }
   if (ONLY === 'stress') { await scenarioStress(); closeAll(); return; }
+  if (ONLY === 'design') { await scenarioDesign(); closeAll(); return; }
+  if (!ONLY) await scenarioDesign();
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
     await scenarioCalls(ctx);
