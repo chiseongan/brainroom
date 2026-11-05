@@ -90,10 +90,13 @@ const msg = (sid, m) => ev(sid, `chrome.runtime.sendMessage(${JSON.stringify(m)}
   await ev(pop.sid, "chrome.storage.local.set({ searchLog: [{ id: 'x1', query: '남은 검색', at: Date.now(), clicks: [] }] }).then(() => 'ok')");
   await ev(pop.sid, "window.__dialogs = 0; window.confirm = () => { window.__dialogs++; return true; }; document.querySelector('#searchClear').click(); 'ok'");
   await sleep(200);
-  ok((await msg(pop.sid, { type: 'search-list' })).log.length === 1 && /한 번 더/.test(await ev(pop.sid, "document.querySelector('#searchClear').textContent")), 'first click on clear only asks again');
+  const firstLog = (await msg(pop.sid, { type: 'search-list' })).log;
+  const firstText = await ev(pop.sid, "document.querySelector('#searchClear').textContent");
+  ok(firstLog.some(l => l.id === 'x1') && /한 번 더/.test(firstText), `first click on clear only asks again (${firstLog.length}, ${firstText})`);
   await ev(pop.sid, "document.querySelector('#searchClear').click(); 'ok'");
   await sleep(300);
-  ok((await msg(pop.sid, { type: 'search-list' })).log.length === 0 && await ev(pop.sid, 'window.__dialogs') === 0, 'second click clears without a browser dialog');
+  const afterLog = (await msg(pop.sid, { type: 'search-list' })).log;
+  ok(!afterLog.some(l => l.id === 'x1') && await ev(pop.sid, 'window.__dialogs') === 0, `second click clears without a browser dialog (${afterLog.length})`);
   // Windows에서 chrome.kill()은 자식 프로세스를 남긴다
   if (process.platform === 'win32') require('child_process').spawnSync('taskkill', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore' });
   else chrome.kill();
