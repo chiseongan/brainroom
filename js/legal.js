@@ -237,10 +237,9 @@ async function downloadMyData() {
 // ---------- 계정과 데이터 삭제 (동의 철회) ----------
 
 async function deleteMyAccount() {
-  const typed = prompt('내 계정과 기록, 회의에서 한 말, 동의 기록을 모두 지워요. 되돌릴 수 없어요.\n\n'
-    + '· 내가 만든 방은 다른 팀원에게 팀장이 넘어가고, 혼자인 방은 삭제돼요.\n'
-    + '· 다른 사람이 쓴 기록이나 회의 요약에 적힌 내 이름은 남을 수 있어요.\n\n'
-    + '계속하려면 "삭제"를 입력하세요.');
+  const typed = await uiPrompt('계정과 데이터를 모두 지울까요?',
+    '내 기록, 회의에서 한 말, 동의 기록, 로그인 계정이 지워지고 되돌릴 수 없어요.\n내가 만든 방은 다른 팀원에게 팀장이 넘어가고, 혼자인 방은 삭제돼요.\n다른 사람이 쓴 기록이나 회의 요약에 적힌 내 이름은 남을 수 있어요.',
+    { ok: '모두 지우기', danger: true, label: '계속하려면 "삭제"를 입력하세요', mustEqual: '삭제' });
   if (typed === null) return;
   if (typed.trim() !== '삭제') return toast('"삭제"를 정확히 입력해 주세요');
   closeModal();

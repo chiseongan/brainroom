@@ -24,9 +24,18 @@
   window.addEventListener('error', e => window.__errors.push(`exception: ${e.message}`));
   window.addEventListener('unhandledrejection', e => window.__errors.push(`rejection: ${e.reason?.code || ''} ${e.reason?.message || e.reason}`));
 
-  window.confirm = () => true;
+  // 브라우저 기본 창이 다시 쓰이면 바로 드러나게 한다
+  window.__systemDialogs = 0;
+  window.confirm = () => { window.__systemDialogs++; return true; };
+  window.prompt = () => { window.__systemDialogs++; return null; };
+  window.alert = () => { window.__systemDialogs++; };
+  // 앱의 확인 창은 시험에서 자동으로 답한다 (창 자체는 시나리오에서 따로 시험한다)
   window.__promptAnswer = null;
-  window.prompt = () => window.__promptAnswer;
+  window.__dialogChoice = undefined;
+  window.__testDialog = opts => {
+    if (opts.input) return window.__promptAnswer;
+    return window.__dialogChoice !== undefined ? window.__dialogChoice : opts.buttons[opts.buttons.length - 1].value;
+  };
 
   const fbUser = { uid: user.uid, displayName: user.name, email: user.email, photoURL: '' };
   const currentUser = {

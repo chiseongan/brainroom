@@ -6,31 +6,43 @@
   <title>BrainRoom</title>
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://www.googleapis.com https://api.github.com https://api.figma.com https://api.notion.com https://*.workers.dev; frame-src https://brainroom-777b0.firebaseapp.com https://accounts.google.com https://docs.google.com https://drive.google.com; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'">
   <meta name="referrer" content="strict-origin">
-  <script src="js/guard.js?v=20261105g"></script>
+  <script src="js/guard.js?v=20261106b"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/static/pretendard.css" integrity="sha384-STKhRt1NV3HXjdmg+AShIj4xPalD60MD7yH6ukZ6j92lz4b5f/7O/FB+LFVBipAU" crossorigin="anonymous">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@2.40.3/dist/galmuri.css" integrity="sha384-55uQGdclWjXwWY0yHikdtcfcat9pPBqMBCVFIeWjRhvPPUYbpJLhIJegzTcFoh/A" crossorigin="anonymous">
-  <link rel="stylesheet" href="css/style.css?v=20261106a">
+  <link rel="stylesheet" href="css/style.css?v=20261106b">
 </head>
 <body>
   <a class="skip-link" href="#app">본문으로 건너뛰기</a>
   <header id="topbar" class="topbar" hidden>
-    <div class="brand" data-go="workspace" title="워크스페이스로">🧠 BrainRoom <span id="teamName"></span></div>
-    <nav id="nav">
-      <button data-go="workspace">🗂️ 워크스페이스</button>
-      <button data-go="timeline">🕒 타임라인</button>
-      <button data-go="decisions">✅ 결정</button>
-      <button data-go="report">📊 리포트</button>
-      <button data-go="calls">🎙️ 회의</button>
-      <button data-go="integrations">🔌 연동</button>
-      <button data-go="meeting" class="nav-beta">🚪 공간 <span class="beta-tag">베타</span></button>
+    <div class="brand" data-go="workspace" title="워크스페이스로"><span class="brand-logo" aria-hidden="true">🧠</span><span class="brand-name">BrainRoom</span><span id="teamName"></span></div>
+    <nav id="nav" aria-label="주요 메뉴">
+      <button data-go="workspace">워크스페이스</button>
+      <span class="nav-sep" aria-hidden="true"></span>
+      <button data-go="timeline">타임라인</button>
+      <button data-go="decisions">결정</button>
+      <button data-go="report">리포트</button>
+      <button data-go="calls">회의</button>
+      <span class="nav-sep" aria-hidden="true"></span>
+      <button data-go="integrations">연동</button>
+      <button data-go="meeting" class="nav-beta">공간 <span class="beta-tag">베타</span></button>
     </nav>
     <div id="profBadge" class="prof-badge" hidden>🎓 교수자 보기 <button class="btn sm" data-tr="leave-prof">학생 보기로</button></div>
     <div class="me">
       <label id="meSwitch">나 <select id="meSelect" title="현재 사용자 (데모용 전환)"></select></label>
-      <button id="roomsBtn" class="btn sm" hidden title="방 만들기 · 참여하기 · 다른 방으로 이동">🏠 방 목록</button>
-      <button id="inviteBtn" class="btn sm" hidden title="이 방의 초대 링크 보기">🔗 초대 링크</button>
-      <div id="userChip" class="user-chip" hidden></div>
-      <button id="menuBtn" class="btn icon" title="워크스페이스 설정">⚙️</button>
+      <button id="inviteBtn" class="btn sm invite-btn" hidden title="이 방의 초대 링크 보기">초대하기</button>
+      <details id="notifyMenu" class="top-menu notify-menu" hidden>
+        <summary><span id="notifyLabel" class="sr-only">알림</span><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/></svg><span id="notifyBadge" class="notify-badge" aria-hidden="true" hidden>0</span></summary>
+        <div id="notifyPanel" class="notify-panel"></div>
+      </details>
+      <details id="accountMenu" class="top-menu account-menu">
+        <summary aria-label="계정 메뉴"><span id="userChip" class="user-chip"></span><span class="caret" aria-hidden="true">▾</span></summary>
+        <div class="account-list">
+          <button id="roomsBtn" hidden title="방 만들기 · 참여하기 · 다른 방으로 이동">방 목록</button>
+          <button id="menuBtn" title="워크스페이스 설정">설정</button>
+          <button id="exitGuestBtn" hidden>체험 끝내고 로그인</button>
+          <button id="logoutBtn" hidden>로그아웃</button>
+        </div>
+      </details>
     </div>
   </header>
 
@@ -49,32 +61,34 @@
   <script src="https://www.gstatic.com/firebasejs/13.2.0/firebase-app-compat.js" integrity="sha384-cLbh0Cu4dx/85kRPmEgNAXMBIChYFkojdl+72mu8+CktIaQ1u3yBrkyiKnDRkZ2q" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/13.2.0/firebase-auth-compat.js" integrity="sha384-4nmyawBuPA7UcE167bEqFiWjWvbYi/4+pPVJIglWre5cWJrdcMmq1BQJejMsZjFb" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/13.2.0/firebase-firestore-compat.js" integrity="sha384-GHWlC9m/51vE+OUgd7/bifFHoPpmxesvM2MyoM0DP8zOuSG6h+e6QsbkCSlvkIWs" crossorigin="anonymous"></script>
-  <script src="js/firebase-config.js?v=20261105g"></script>
-  <script src="js/ai-config.js?v=20261105g"></script>
-  <script src="js/auth.js?v=20261105g"></script>
-  <script src="js/themes.js?v=20261105g"></script>
-  <script src="js/nlp.js?v=20261105g"></script>
-  <script src="js/sanitize.js?v=20261106a"></script>
-  <script src="js/legal-config.js?v=20261105g"></script>
-  <script src="js/store.js?v=20261106a"></script>
-  <script src="js/trace.js?v=20261105g"></script>
-  <script src="js/cloud.js?v=20261106a"></script>
-  <script src="js/iso.js?v=20261105g"></script>
-  <script src="js/decor.js?v=20261105g"></script>
-  <script src="js/room.js?v=20261105g"></script>
-  <script src="js/hall.js?v=20261105g"></script>
-  <script src="js/player.js?v=20261105g"></script>
-  <script src="js/views.js?v=20261105g"></script>
-  <script src="js/meeting.js?v=20261105g"></script>
-  <script src="js/meetimport.js?v=20261105g"></script>
-  <script src="js/secure.js?v=20261105g"></script>
-  <script src="js/ai.js?v=20261105g"></script>
-  <script src="js/integrations.js?v=20261106a"></script>
-  <script src="js/sampleapi.js?v=20261105g"></script>
-  <script src="js/workspace.js?v=20261106a"></script>
-  <script src="js/extension.js?v=20261105g"></script>
-  <script src="js/legal.js?v=20261105g"></script>
-  <script src="js/a11y.js?v=20261105g"></script>
-  <script src="js/app.js?v=20261106a"></script>
+  <script src="js/firebase-config.js?v=20261106b"></script>
+  <script src="js/ai-config.js?v=20261106b"></script>
+  <script src="js/auth.js?v=20261106b"></script>
+  <script src="js/themes.js?v=20261106b"></script>
+  <script src="js/nlp.js?v=20261106b"></script>
+  <script src="js/sanitize.js?v=20261106b"></script>
+  <script src="js/legal-config.js?v=20261106b"></script>
+  <script src="js/ui.js?v=20261106b"></script>
+  <script src="js/store.js?v=20261106b"></script>
+  <script src="js/trace.js?v=20261106b"></script>
+  <script src="js/cloud.js?v=20261106b"></script>
+  <script src="js/iso.js?v=20261106b"></script>
+  <script src="js/decor.js?v=20261106b"></script>
+  <script src="js/room.js?v=20261106b"></script>
+  <script src="js/hall.js?v=20261106b"></script>
+  <script src="js/player.js?v=20261106b"></script>
+  <script src="js/views.js?v=20261106b"></script>
+  <script src="js/meeting.js?v=20261106b"></script>
+  <script src="js/meetimport.js?v=20261106b"></script>
+  <script src="js/secure.js?v=20261106b"></script>
+  <script src="js/ai.js?v=20261106b"></script>
+  <script src="js/integrations.js?v=20261106b"></script>
+  <script src="js/sampleapi.js?v=20261106b"></script>
+  <script src="js/workspace.js?v=20261106b"></script>
+  <script src="js/extension.js?v=20261106b"></script>
+  <script src="js/notify.js?v=20261106b"></script>
+  <script src="js/legal.js?v=20261106b"></script>
+  <script src="js/a11y.js?v=20261106b"></script>
+  <script src="js/app.js?v=20261106b"></script>
 </body>
 </html>

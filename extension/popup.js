@@ -45,7 +45,14 @@ $('#searchSend').addEventListener('click', async () => {
   refreshSearch();
 });
 $('#searchClear').addEventListener('click', async () => {
-  if (!confirm('모은 검색 기록을 모두 지울까요?')) return;
+  // 한 번 더 눌러야 지운다 (브라우저 기본 창을 쓰지 않는다)
+  const btn = $('#searchClear');
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = btn.textContent;
+    btn.textContent = '한 번 더 누르면 모두 지워요';
+    setTimeout(() => { btn.textContent = btn.dataset.armed; delete btn.dataset.armed; }, 3000);
+    return;
+  }
   await chrome.runtime.sendMessage({ type: 'search-clear' });
   refreshSearch();
 });

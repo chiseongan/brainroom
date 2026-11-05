@@ -583,7 +583,7 @@ function setViewer(viewer) {
 
 // ---------- 이벤트 ----------
 
-document.addEventListener('click', e => {
+document.addEventListener('click', async e => {
   const btn = e.target.closest('[data-tr]');
   if (!btn) return;
   const act = btn.dataset.tr;
@@ -599,7 +599,7 @@ document.addEventListener('click', e => {
   if (act === 'cand-ok' || act === 'cand-edit') {
     const c = cand();
     if (!c) return;
-    const text = act === 'cand-edit' ? prompt('결정 내용을 다듬어 주세요', c.text) : c.text;
+    const text = act === 'cand-edit' ? await uiPrompt('결정 내용을 다듬어 주세요', '', { value: c.text, ok: '고쳐서 확정', multiline: true, label: '결정 내용' }) : c.text;
     if (!text?.trim()) return;
     addDecision({ text, sourceIds: [c.itemId], origin: 'auto', candidateKey: c.key });
     toast('✅ 결정으로 확정했어요');
@@ -608,19 +608,19 @@ document.addEventListener('click', e => {
     saveState();
   } else if (act === 'dec-edit') {
     const d = dec();
-    const text = prompt('결정 내용 수정', d.text);
+    const text = await uiPrompt('결정 내용 수정', '', { value: d.text, ok: '저장', multiline: true, label: '결정 내용' });
     if (!text?.trim()) return;
     d.text = maskPII(text).trim();
     saveState();
   } else if (act === 'dec-del') {
-    if (!confirm('이 결정을 삭제할까요?')) return;
+    if (!await uiConfirm('이 결정을 지울까요?', '결정 기록에서 사라져요.', { ok: '지우기', danger: true })) return;
     state.decisions = state.decisions.filter(d => d.id !== btn.dataset.dec);
     saveState();
   } else if (act === 'dec-src') {
     return openDecisionSourceModal(btn.dataset.dec);
   } else if (act === 'rank-decide') {
     const item = itemById(btn.dataset.item);
-    const text = prompt('회의 결정으로 기록할 내용', `「${item.title}」을(를) 우선 검토한다`);
+    const text = await uiPrompt('회의 결정으로 기록할까요?', '', { value: `「${item.title}」을(를) 우선 검토한다`, ok: '기록하기', multiline: true, label: '결정 내용' });
     if (!text?.trim()) return;
     addDecision({ text, sourceIds: [item.id], origin: 'vote' });
     toast('✅ 결정 기록에 추가했어요');

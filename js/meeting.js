@@ -636,7 +636,7 @@ async function loadPastLines(id) {
 
 // ---------- 이벤트 ----------
 
-document.addEventListener('click', e => {
+document.addEventListener('click', async e => {
   const btn = e.target.closest('[data-mt]');
   if (!btn) return;
   const [act, arg] = btn.dataset.mt.split(':');
@@ -650,7 +650,7 @@ document.addEventListener('click', e => {
     return;
   }
   if (act === 'erase') {
-    if (!confirm('이 회의의 요약과 녹취 원문을 모두 지울까요? 되돌릴 수 없어요.\n(각자 방에 담긴 "내가 한 말" 기록은 각자 지울 수 있어요)')) return;
+    if (!await uiConfirm('이 회의 기록을 지울까요?', '요약과 녹취 원문이 모두 지워지고 되돌릴 수 없어요. 각자 방에 담긴 "내가 한 말" 기록은 각자 지울 수 있어요.', { ok: '지우기', danger: true })) return;
     eraseCallDocs(callsRef().doc(arg)).then(() => { pastLines.delete(arg); toast('회의 기록을 지웠어요'); }).catch(e => writeFailed(e, '회의 기록 삭제'));
     return;
   }
@@ -673,7 +673,7 @@ document.addEventListener('click', e => {
   if (act === 'leave') return leaveCall();
   if (act === 'end') {
     const id = arg || call.id;
-    if (!confirm('회의를 끝내고 녹취록을 요약할까요? 참여 중인 사람은 모두 나가져요.')) return;
+    if (!await uiConfirm('회의를 끝낼까요?', '녹취록을 요약하고, 참여 중인 사람은 모두 나가져요.', { ok: '회의 끝내기', danger: true })) return;
     return endCall(id).then(() => { if (call.id === id) leaveCall(false); toast('회의를 끝내고 요약했어요'); });
   }
 });

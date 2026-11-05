@@ -86,6 +86,17 @@ const msg = (sid, m) => ev(sid, `chrome.runtime.sendMessage(${JSON.stringify(m)}
   const decor = await ev(app.sid, "go('room', state.meId); [...document.querySelectorAll('.room:not(.mini) [data-zone^=decor]')].map(e => e.dataset.zone.slice(6)).join(',')");
   ok(/recycle/.test(decor) && /piggy/.test(decor), `search keywords became room objects (${decor})`);
   ok((await msg(pop.sid, { type: 'search-list' })).log.length === 0, 'sent searches removed from extension log');
+  // 모두 지우기는 기본 창 없이 두 번 눌러 확인한다
+  await ev(pop.sid, "chrome.storage.local.set({ searchLog: [{ id: 'x1', query: '남은 검색', at: Date.now(), clicks: [] }] }).then(() => 'ok')");
+  await ev(pop.sid, "window.__dialogs = 0; window.confirm = () => { window.__dialogs++; return true; }; document.querySelector('#searchClear').click(); 'ok'");
+  await sleep(200);
+  const firstLog = (await msg(pop.sid, { type: 'search-list' })).log;
+  const firstText = await ev(pop.sid, "document.querySelector('#searchClear').textContent");
+  ok(firstLog.some(l => l.id === 'x1') && /한 번 더/.test(firstText), `first click on clear only asks again (${firstLog.length}, ${firstText})`);
+  await ev(pop.sid, "document.querySelector('#searchClear').click(); 'ok'");
+  await sleep(300);
+  const afterLog = (await msg(pop.sid, { type: 'search-list' })).log;
+  ok(!afterLog.some(l => l.id === 'x1') && await ev(pop.sid, 'window.__dialogs') === 0, `second click clears without a browser dialog (${afterLog.length})`);
   // Windows에서 chrome.kill()은 자식 프로세스를 남긴다
   if (process.platform === 'win32') require('child_process').spawnSync('taskkill', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore' });
   else chrome.kill();
