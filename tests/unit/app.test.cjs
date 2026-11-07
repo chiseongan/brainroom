@@ -16,7 +16,7 @@ function makeApp(fakeFetch, names = ['안치성', '김단유', '박채연']) {
     document: { querySelector: () => null, addEventListener() {} }, window: {}, navigator: {},
   };
   vm.createContext(ctx);
-  vm.runInContext(['themes', 'nlp', 'sanitize', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport', 'sampleapi', 'workspace'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
+  vm.runInContext(['themes', 'nlp', 'sanitize', 'store', 'trace', 'iso', 'decor', 'integrations', 'meetimport', 'kakao', 'sampleapi', 'workspace'].map(f => fs.readFileSync(path.join(root, 'js', `${f}.js`), 'utf8')).join('\n;\n')
     + `\n;var guestMode = false, authUser = null, cloud = { loaded: true };
     function render() {} function toast() {} function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } function fmtDate() { return ''; } function trunc(s) { return s; } function timeAgo() { return ''; }
     function safeUrl(u) { const c = cleanUrl(u); return !c ? '' : /^https?:\\/\\//i.test(c) ? c : 'https://' + c; }
@@ -24,7 +24,7 @@ function makeApp(fakeFetch, names = ['안치성', '김단유', '박채연']) {
     function hashCode(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return Math.abs(h); }
     state = newWorkspace('t', ${JSON.stringify(names)}); state.meId = state.members[0].id;
     globalThis.T = { get state() { return state; }, parseTranscript, guessMember, figmaTextFromDocument, coreKeywords, upsertWork, deleteItem, roomDecorGroups,
-      syncGithub, syncFigma, syncNotion, decorFor, workKeywords, itemDecorIds, detectThemes, extractKeywords, addItem, decisionCandidates, DECISION_PATTERN, maskPII, weeklySummary, weekStart, sanitizeForProf, decorMatch, DECOR, DECOR_BY_ID, DESK_Z, feedFilter, feedCardHTML };`, ctx);
+      syncGithub, syncFigma, syncNotion, decorFor, workKeywords, itemDecorIds, detectThemes, extractKeywords, addItem, decisionCandidates, DECISION_PATTERN, maskPII, weeklySummary, weekStart, sanitizeForProf, decorMatch, DECOR, DECOR_BY_ID, DESK_Z, feedFilter, feedCardHTML, parseKakaoChat, kakaoLines, kakaoLocalImport, isKakaoNoise, parseGdocId, syncGdocs, cleanMember, cleanLinks };`, ctx);
   vm.runInContext(fs.readFileSync(path.join(root, 'js', 'room.js'), 'utf8').replace(/function hashCode[\s\S]*?\n}\n/, '') + `\n;globalThis.T.R = { decorPlacement, roomHTML, FLOOR_SLOTS, DESK_SLOTS };`, ctx);
   ctx.T.ctx = ctx;
   return ctx.T;
@@ -42,6 +42,45 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
   const c = T.parseTranscript('WEBVTT\n\n1\n00:00:01.000 --> 00:00:04.000\n<v 박채연>로그인 화면부터 만들어요</v>\n\n2\n00:00:05.000 --> 00:00:07.000\n<v 안치성>네 좋아요');
   ok(c.length === 2 && c[0].name === '박채연' && c[0].text === '로그인 화면부터 만들어요', 'WebVTT <v 화자>');
   ok(T.guessMember('안치성') === T.state.members[0].id && T.guessMember('김단유 (Dan)') === T.state.members[1].id && T.guessMember('외부 손님') === '', '화자 ↔ 팀원 짝짓기');
+
+  console.log('--- 카카오톡 대화 내보내기 해석');
+  {
+    const pc = T.parseKakaoChat('안치성, 김단유 님과 카카오톡 대화\n저장한 날짜 : 2026-11-06 18:00:00\n\n--------------- 2026년 11월 3일 월요일 ---------------\n[안치성] [오후 3:21] 다회용기 순환 서비스로 가는 거 어때요\n[김단유] [오후 3:22] 좋아요\n설문은 제가 만들게요\n[김단유] [오후 3:22] 이모티콘\n[안치성] [오전 12:05] 자정 넘어서 보냄\n--------------- 2026년 11월 4일 화요일 ---------------\n[박채연] [오전 9:10] 예산은 제가 정리하기로 했어요');
+    ok(pc.title === '안치성, 김단유' && pc.messages.length === 5, `PC(Windows) 형식: 제목·메시지 ${pc.messages.length}개`);
+    ok(pc.messages[1].name === '김단유' && pc.messages[1].text === '좋아요\n설문은 제가 만들게요', '여러 줄 메시지는 앞 메시지에 이어 붙임');
+    const d0 = new Date(pc.messages[0].at), d3 = new Date(pc.messages[3].at), d4 = new Date(pc.messages[4].at);
+    ok(d0.getFullYear() === 2026 && d0.getMonth() === 10 && d0.getDate() === 3 && d0.getHours() === 15 && d0.getMinutes() === 21, `날짜 구분선 + 오후 시각 → 현지 시각 (${d0.toString().slice(0, 24)})`);
+    ok(d3.getHours() === 0 && d3.getMinutes() === 5 && d4.getDate() === 4 && d4.getHours() === 9, '오전 12시 = 0시, 다음 날짜 구분선 반영');
+    const an = T.parseKakaoChat('캡스톤 3조 님과 카카오톡 대화\n저장한 날짜 : 2026년 11월 6일 오후 6:00\n\n2026년 11월 3일 오후 3:21, 안치성 : 다회용기 순환 서비스로 가는 거 어때요\n2026년 11월 3일 오후 3:22, 김단유 : 좋아요\n설문은 제가 만들게요\n2026년 11월 3일 오후 3:23, 김단유님이 들어왔습니다.\n2026년 11월 3일 오후 3:24, 박채연 : 사진');
+    ok(an.title === '캡스톤 3조' && an.messages.length === 3 && an.messages[1].text.includes('설문은') && !an.messages.some(m => /들어왔습니다/.test(m.text)), `Android 형식: 입장 알림 제외 (${an.messages.length}개)`);
+    const ios = T.parseKakaoChat('2026. 11. 3. 오후 3:21, 안치성 : 반납함 지도 초안 올렸어요\n2026. 11. 3. 오후 3:22, 김단유 : 확인할게요');
+    ok(ios.messages.length === 2 && new Date(ios.messages[0].at).getHours() === 15, 'iOS 형식 (2026. 11. 3.)');
+    const csv = T.parseKakaoChat('Date,User,Message\n2026-11-03 15:21:00,"안치성","다회용기 순환 서비스로 가는 거 어때요"\n2026-11-03 15:22:00,"김단유","좋아요, ""설문""은 제가"');
+    ok(csv.messages.length === 2 && csv.messages[1].text === '좋아요, "설문"은 제가' && new Date(csv.messages[0].at).getHours() === 15, 'CSV 형식 (따옴표·쉼표 포함)');
+    const en = T.parseKakaoChat('[Chiseong] [3:21 PM] english export\n[Danyu] [12:10 AM] midnight');
+    ok(en.messages.length === 2 && new Date(en.messages[0].at).getHours() === 15 && new Date(en.messages[1].at).getHours() === 0, '영어 설정(AM/PM) 형식');
+    ok(T.parseKakaoChat('그냥 아무 글').messages.length === 0, '카카오톡 형식이 아니면 비어 있음');
+    ok(T.isKakaoNoise('ㅋㅋㅋ') && T.isKakaoNoise('ㅇㅇ') && T.isKakaoNoise('사진') && T.isKakaoNoise('이모티콘') && T.isKakaoNoise('삭제된 메시지입니다.') && !T.isKakaoNoise('설문은 제가 만들게요'), '짧은 반응·사진·이모티콘·삭제 메시지는 잡담으로');
+    const day = 864e5, base = Date.now() - 2 * day;
+    const msgs = [
+      { at: base, name: '안치성', text: '다회용기 순환 서비스로 가는 거 어때요' }, { at: base + 60e3, name: '안치성', text: '반납함 지도도 필요하고요' },
+      { at: base + 90e3, name: '김단유', text: 'ㅇㅇ' }, { at: base + 120e3, name: '김단유', text: '설문은 제가 만들게요 https://forms.gle/abc' },
+      { at: base + 20 * 60e3, name: '안치성', text: '20분 뒤 다른 얘기' }, { at: base - 40 * day, name: '안치성', text: '오래된 메시지' },
+      { at: base + 130e3, name: '외부 손님', text: '팀원 아님' },
+    ];
+    const map = { 안치성: T.state.members[0].id, 김단유: T.state.members[1].id, '외부 손님': '' };
+    const lines = T.kakaoLines(msgs, { since: Date.now() - 30 * day, map });
+    ok(lines.length === 4 && lines[0].text === '다회용기 순환 서비스로 가는 거 어때요\n반납함 지도도 필요하고요' && lines[0].memberId === T.state.members[0].id, `같은 사람이 3분 안에 이어 보낸 말은 한 줄로, 기간 밖·잡담 제외 (${lines.length}줄)`);
+    const guest = lines.find(l => l.name === '외부 손님'), later = lines.find(l => l.text === '20분 뒤 다른 얘기');
+    ok(lines[1].name === '김단유' && lines[1].text.includes('forms.gle') && later && guest && guest.memberId === null && lines.indexOf(guest) < lines.indexOf(later), '링크는 남기고, 짝 없는 화자는 memberId 없이 시간순으로 남김');
+    const K = makeApp(null, ['안치성', '김단유']);
+    const made = K.kakaoLocalImport({ title: '캡스톤 3조', lines: T.kakaoLines(msgs, { since: 0, map: { 안치성: K.state.members[0].id, 김단유: K.state.members[1].id } }) });
+    const talks = K.state.items.filter(i => i.type === 'talk');
+    ok(made === 2 && talks.length === 2 && talks.every(t => t.talk?.callId?.startsWith('kakao_') && t.title.includes('캡스톤 3조')), `오프라인 방: 팀원마다 '내가 한 말' 기록 (${talks.length}개)`);
+    const mine = talks.find(t => t.memberId === K.state.members[0].id);
+    ok(mine.keywords.includes('다회용기') && mine.content.includes('다회용기 순환') && mine.talk.lineCount === 3, `키워드·주요 발언 (${mine.keywords})`);
+    ok(K.kakaoLocalImport({ title: '캡스톤 3조', lines: T.kakaoLines(msgs, { since: 0, map: { 안치성: K.state.members[0].id } }) }) === 0 || K.state.items.filter(i => i.type === 'talk').length === 2, '같은 대화를 다시 가져와도 중복되지 않음');
+  }
 
   console.log('--- 개인정보 가리기');
   const masked = T.maskPII('메일 me@test.com 전화 010-1234-5678 주민 990101-1234567 끝');
@@ -162,11 +201,26 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
     const u = new URL(url);
     if (u.pathname.endsWith('/commits')) return j([{ sha: 'a'.repeat(40), html_url: 'https://github.com/x', commit: { message: 'fix(auth): 로그인 오류 수정\n\nCo-Authored-By: Claude <x@y>', author: { date: now } } }, { sha: 'b'.repeat(40), html_url: 'https://github.com/y', commit: { message: '발표 자료 정리', author: { date: now } } }]);
     if (u.pathname.endsWith('/pulls')) return j([{ number: 3, title: '결제 화면 추가', body: '', user: { login: 'me' }, created_at: now, html_url: 'https://github.com/z', state: 'open' }]);
+    if (u.pathname.endsWith('/issues/comments')) return j([
+      { id: 11, body: '반납함 위치 데이터는 공공데이터에서 받기로 해요', user: { login: 'me' }, created_at: now, html_url: 'https://github.com/o/r/issues/7#c11', issue_url: 'https://api.github.com/repos/o/r/issues/7' },
+      { id: 12, body: '남의 댓글', user: { login: 'other' }, created_at: now, html_url: '', issue_url: 'https://api.github.com/repos/o/r/issues/7' },
+    ]);
+    if (u.pathname.endsWith('/issues')) {
+      ok(u.searchParams.get('creator') === 'me' && u.searchParams.get('state') === 'all', '이슈는 내가 만든 것만(creator) 전체 상태로 조회');
+      return j([
+        { number: 7, title: '다회용기 반납함 위치 데이터 수집', body: '지도에 표시할 반납함 좌표가 필요해요', user: { login: 'me' }, created_at: now, html_url: 'https://github.com/o/r/issues/7', state: 'open', comments: 2 },
+        { number: 3, title: '결제 화면 추가', body: '', user: { login: 'me' }, created_at: now, html_url: 'https://github.com/z', state: 'open', pull_request: { url: 'x' } },
+      ]);
+    }
     return { ok: false, status: 404, json: async () => ({}) };
   }, ['나']);
   await G.syncGithub({ login: 'me', token: '' }, 'o/r', Date.now() - 864e5);
   const works = G.state.items.filter(i => i.type === 'work');
-  ok(works.length === 3 && works.every(w => w.work.keywords?.length), '커밋·PR마다 핵심 키워드');
+  ok(works.length === 5 && works.every(w => w.work.keywords?.length), `커밋·PR·이슈·이슈 댓글마다 핵심 키워드 (${works.length}개)`);
+  const issue = works.find(w => w.work.kind === 'issue');
+  ok(issue && issue.title.includes('#7') && issue.keywords.includes('반납함') && !works.some(w => w.work.kind === 'issue' && w.title.includes('#3')), '이슈 기록 (PR은 이슈 목록에서 빼고 PR로만)');
+  const ic = works.find(w => w.work.kind === 'issue_comment');
+  ok(ic && ic.content.includes('공공데이터') && !ic.content.includes('남의 댓글') && ic.url.includes('#c11'), '내 이슈 댓글만 하루 단위로 묶음');
   ok(works.find(w => w.work.ai)?.title.includes('로그인'), 'AI 공동 작성 커밋 표시');
   const g1 = G.roomDecorGroups(G.state.items);
   console.log('    물품:', show(g1));
@@ -236,6 +290,117 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
     ok(empty.total === 0 && empty.decisions.length === 0, '기록이 없는 주');
   }
 
+  console.log('--- Notion 전체 검색: 하위 페이지·본문까지');
+  {
+    const ME2 = 'me', ROOT = '11111111-1111-4111-8111-111111111111', A = '22222222-2222-4222-8222-222222222222', B = '33333333-3333-4333-8333-333333333333', C = '44444444-4444-4444-8444-444444444444', D = '55555555-5555-4555-8555-555555555555';
+    const page = (id, title, who, parent) => ({ id, url: `https://notion.so/${id}`, last_edited_time: now, last_edited_by: { id: who }, parent, properties: { t: { type: 'title', title: [{ plain_text: title }] } } });
+    const pages = {
+      [ROOT]: page(ROOT, '팀 위키', 'other', { type: 'workspace', workspace: true }),
+      [A]: page(A, '인터뷰 설문 결과', ME2, { type: 'page_id', page_id: ROOT }),
+      [B]: page(B, '남이 고친 페이지', 'other', { type: 'page_id', page_id: ROOT }),
+      [C]: page(C, '내 개인 메모', ME2, { type: 'workspace', workspace: true }),
+      [D]: page(D, '예산 계획', ME2, { type: 'page_id', page_id: A }),
+    };
+    let searches = 0, blockReads = 0;
+    const N = makeApp(async (url, init = {}) => {
+      const u = new URL(url);
+      if (u.pathname === '/v1/search') { searches++; ok(init.method === 'POST' && JSON.parse(init.body).sort?.timestamp === 'last_edited_time', 'search: 마지막 수정 시각 순으로 요청'); return j({ results: [pages[A], pages[B], pages[C], pages[D]], has_more: false }); }
+      const pg = u.pathname.match(/^\/v1\/pages\/(.+)$/);
+      if (pg) return pages[pg[1]] ? j(pages[pg[1]]) : { ok: false, status: 404, json: async () => ({}) };
+      const bl = u.pathname.match(/^\/v1\/blocks\/(.+)\/children$/);
+      if (bl) { blockReads++; return j({ results: bl[1] === A ? [{ type: 'paragraph', paragraph: { rich_text: [{ plain_text: '자취생 12명 인터뷰 설문 응답을 표로 정리' }] } }, { type: 'heading_2', heading_2: { rich_text: [{ plain_text: '다회용기 선호도' }] } }] : [{ type: 'bulleted_list_item', bulleted_list_item: { rich_text: [{ plain_text: '발표 자료 인쇄비' }] } }] }); }
+      if (u.pathname === '/v1/comments') return j({ results: [] });
+      return { ok: false, status: 404, json: async () => ({}) };
+    }, ['나']);
+    await N.syncNotion({ token: 't', userId: ME2 }, [ROOT], Date.now() - 864e5);
+    const got = N.state.items.filter(i => i.type === 'work' && i.work.source === 'notion');
+    ok(got.length === 2 && got.some(w => w.work.page === A) && got.some(w => w.work.page === D), `연결한 페이지 아래의 내 수정만 (하위·손자 페이지 포함, 남의 수정·내 개인 메모 제외) → ${got.map(w => w.title)}`);
+    ok(got.find(w => w.work.page === A)?.keywords.some(k => /설문|인터뷰|다회용기/.test(k)), `페이지 본문에서 키워드 (${got.find(w => w.work.page === A)?.keywords})`);
+    ok(searches === 1 && blockReads === 2, `검색 1번, 본문 읽기는 내 수정 페이지만 (${searches}, ${blockReads})`);
+    blockReads = 0;
+    await N.syncNotion({ token: 't', userId: ME2 }, [ROOT], Date.now() - 864e5);
+    ok(blockReads === 0, '같은 수정 시각이면 본문을 다시 읽지 않음 (캐시)');
+    const N2 = makeApp(async (url, init = {}) => {
+      const u = new URL(url);
+      if (u.pathname === '/v1/search') return j({ results: [pages[A], pages[B], pages[C], pages[D]], has_more: false });
+      const bl = u.pathname.match(/^\/v1\/blocks\/(.+)\/children$/);
+      if (bl) return j({ results: [] });
+      if (u.pathname === '/v1/comments') return j({ results: [] });
+      return { ok: false, status: 404, json: async () => ({}) };
+    }, ['나']);
+    await N2.syncNotion({ token: 't', userId: ME2 }, [], Date.now() - 864e5);
+    ok(N2.state.items.filter(i => i.type === 'work').length === 3, '연결한 페이지가 없으면 통합에 공유된 모든 페이지에서 내 수정을 가져옴');
+  }
+
+  console.log('--- Google 문서: 수정 기록·댓글');
+  {
+    const gid = '1AbC_dEf-GhIjKlMnOpQrStUvWxYz0123456789';
+    ok(T.parseGdocId(`https://docs.google.com/document/d/${gid}/edit?usp=sharing`) === gid && T.parseGdocId(`https://docs.google.com/spreadsheets/d/${gid}/edit#gid=0`) === gid && T.parseGdocId(`https://docs.google.com/presentation/d/${gid}/edit`) === gid && T.parseGdocId(`https://drive.google.com/file/d/${gid}/view`) === gid && T.parseGdocId(`https://drive.google.com/open?id=${gid}`) === gid && T.parseGdocId('그냥 글') === '' && T.parseGdocId('https://docs.google.com/document/d/short/edit') === '', 'Docs·Sheets·Slides·Drive 링크에서 파일 id (짧은 가짜 id는 거절)');
+    const calls = [];
+    const G2 = makeApp(async (url, init = {}) => {
+      const u = new URL(url); calls.push(u.pathname + u.search);
+      if (init.headers?.Authorization !== 'Bearer ya29.test') calls.push('BAD-AUTH');
+      if (u.pathname === '/drive/v3/files/1DOC') return j({ id: '1DOC', name: '발표 대본', mimeType: 'application/vnd.google-apps.document', modifiedTime: now, webViewLink: 'https://docs.google.com/document/d/1DOC/edit' });
+      if (u.pathname === '/drive/v3/files/1DOC/revisions') return j({ revisions: [
+        { id: 'r1', modifiedTime: now, lastModifyingUser: { displayName: '나', me: true } },
+        { id: 'r2', modifiedTime: now, lastModifyingUser: { displayName: '나', me: true } },
+        { id: 'r3', modifiedTime: now, lastModifyingUser: { displayName: '남', me: false } },
+        { id: 'r0', modifiedTime: new Date(Date.now() - 40 * 864e5).toISOString(), lastModifyingUser: { displayName: '나', me: true } },
+      ] });
+      if (u.pathname === '/drive/v3/files/1DOC/export') return { ok: true, status: 200, json: async () => { throw new Error('text'); }, text: async () => '다회용기 순환 서비스 발표 대본\n1. 문제: 배달 포장재 쓰레기\n2. 해결: 반납함과 포인트' };
+      if (u.pathname === '/drive/v3/files/1DOC/comments') return j({ comments: [
+        { id: 'c1', createdTime: now, content: '예산 슬라이드는 표로 바꿔요', author: { displayName: '나', me: true } },
+        { id: 'c2', createdTime: now, content: '남의 댓글', author: { displayName: '남', me: false } },
+      ] });
+      return { ok: false, status: 404, json: async () => ({}) };
+    }, ['나']);
+    const n = await G2.syncGdocs({ token: 'ya29.test', email: 'me@x.com' }, ['1DOC'], Date.now() - 30 * 864e5);
+    const gd = G2.state.items.filter(i => i.type === 'work' && i.work.source === 'gdocs');
+    const edit = gd.find(w => w.work.kind === 'edit'), cm = gd.find(w => w.work.kind === 'comment');
+    ok(n === 2 && gd.length === 2 && edit && cm, `수정(하루 묶음)·댓글 기록 (${gd.map(w => w.work.kind)})`);
+    ok(edit.title.includes('발표 대본') && edit.work.count === 2 && edit.url === 'https://docs.google.com/document/d/1DOC/edit', `내 수정만 세어 하루 2번 (${edit.title}, ${edit.work.count}번)`);
+    ok(edit.keywords.some(k => /다회용기|포장재|반납함/.test(k)), `문서 본문에서 키워드 (${edit.keywords})`);
+    ok(cm.content.includes('예산 슬라이드') && !cm.content.includes('남의 댓글'), '내 댓글만');
+    ok(calls.some(c => c.includes('/export?mimeType=text%2Fplain')) && calls.some(c => c.includes('/revisions?')) && calls.some(c => c.includes('fields=')) && !calls.includes('BAD-AUTH'), `Drive API: files·revisions·export·comments, 모두 Bearer 토큰 (${calls.length}번)`);
+    calls.length = 0;
+    await G2.syncGdocs({ token: 'ya29.test', email: 'me@x.com' }, ['1DOC'], Date.now() - 30 * 864e5);
+    ok(!calls.some(c => c.includes('/export')), '수정 시각이 같으면 본문을 다시 읽지 않음 (캐시)');
+    const m = T.cleanMember({ id: 'm1', name: 'x', color: '#000000', connections: { gdocs: 'ok', github: 'error' } });
+    ok(m.connections.gdocs === 'ok' && T.cleanLinks({ gdocs: ['1DOC', 7] }).gdocs.join() === '1DOC', 'sanitize: gdocs 연결 상태·링크 통과');
+  }
+
+  console.log('--- 프록시 경유 (PROXY_URL + 로그인 + config.proxy)');
+  {
+    const sent = [];
+    const P = makeApp(async (url, init = {}) => {
+      sent.push({ url, init });
+      const u = new URL(url);
+      if (u.pathname === '/v1/config') return j({ proxy: { github: true, figma: true, notion: true }, features: {} });
+      if (u.pathname.endsWith('/versions')) return j({ versions: [] });
+      if (u.pathname.endsWith('/comments')) return j({ comments: [], results: [] });
+      if (u.pathname.endsWith('/search')) return j({ results: [] });
+      if (u.pathname.includes('/v1/pages/')) return { ok: false, status: 404, json: async () => ({}) };
+      if (u.pathname.endsWith('/query')) return j({ results: [] });
+      return j({ name: 'f' });
+    }, ['나']);
+    const run = code => vm.runInContext(code, P.ctx);
+    run(`var PROXY_URL = 'https://proxy.example'; var AUTH_ENABLED = true; authUser = { uid: 'u1' };
+      var firebase = { auth: () => ({ currentUser: { getIdToken: async () => 'id-token' } }) };
+      function proxyReady() { return true; } async function proxyConfig() { return (await fetch(PROXY_URL + '/v1/config')).json(); }`);
+    await P.syncFigma({ token: 'figd_pat', userId: 'me' }, ['KEY1234567890ABCD'], Date.now() - 864e5);
+    const fg = sent.find(x => x.url.includes('/files/KEY1234567890ABCD/versions'));
+    ok(fg && fg.url === 'https://proxy.example/v1/proxy/figma/v1/files/KEY1234567890ABCD/versions', `Figma 요청이 프록시 경로로 바뀜 (${fg && fg.url})`);
+    ok(fg && fg.init.headers.Authorization === 'Bearer id-token' && fg.init.headers['X-BR-Token'] === 'figd_pat' && !fg.init.headers['X-Figma-Token'], 'Figma 토큰은 X-BR-Token으로만, 로그인 토큰은 Authorization');
+    await P.syncNotion({ token: 'ntn_s', userId: 'me' }, ['1a2b3c4d-5e6f-7081-9203-a4b5c6d7e8f9'], Date.now() - 864e5);
+    const q = sent.find(x => x.url.endsWith('/query'));
+    ok(q && q.url.startsWith('https://proxy.example/v1/proxy/notion/v1/databases/') && q.init.method === 'POST' && JSON.parse(q.init.body).page_size === 50 && q.init.headers['Content-Type'] === 'application/json', 'Notion 조회(POST)도 프록시로, 본문 그대로');
+    ok(sent.every(x => !x.url.includes('api.figma.com') && !x.url.includes('api.notion.com')), '프록시가 있으면 서비스로 직접 나가지 않음');
+    run(`proxyConfigCache = null; proxyConfig = async () => ({ proxy: { github: true }, features: {} });`);
+    sent.length = 0;
+    await P.syncFigma({ token: 'figd_pat', userId: 'me' }, ['KEY1234567890ABCD'], Date.now() - 864e5);
+    ok(sent.length && sent.every(x => x.url.startsWith('https://api.figma.com/') && x.init.headers['X-Figma-Token'] === 'figd_pat'), '프록시가 그 소스를 중계하지 않으면 직접 호출로 폴백');
+  }
+
   console.log('--- 샘플 체험의 가상 API 데이터');
   {
     let realCalls = 0;
@@ -251,10 +416,12 @@ const show = groups => groups.map(g => `${g.decor.name}(${g.count})`).join(' / '
     ok(S.state.meId === me, '가져온 뒤 현재 사용자가 그대로');
     const m = S.state.members;
     const ofMember = (i, src) => works.filter(w => w.memberId === m[i].id && w.work.source === src);
-    ok(ofMember(0, 'github').length === 4 && ofMember(1, 'github').length === 4, '팀원마다 자기 커밋·PR만');
+    ok(ofMember(0, 'github').length === 7 && ofMember(1, 'github').length === 6 && ofMember(3, 'github').length === 3, `팀원마다 자기 커밋·PR·이슈·이슈 댓글만 (${[0, 1, 2, 3].map(i => ofMember(i, 'github').length)})`);
+    ok(works.some(w => w.work.kind === 'issue' && w.title.includes('#21')) && !works.some(w => w.work.kind === 'issue' && w.title.includes('#12')), '샘플 이슈: PR은 이슈로 세지 않음');
     ok(ofMember(2, 'figma').length === 3 && ofMember(0, 'figma').length === 2 && !ofMember(1, 'figma').length, 'Figma: 자기 버전·댓글만, 미연결 팀원은 없음');
-    ok(ofMember(1, 'notion').length === 2 && ofMember(2, 'notion').length === 2 && !ofMember(0, 'notion').length, 'Notion: 마지막 수정자·자기 댓글만');
+    ok(ofMember(1, 'notion').length === 2 && ofMember(2, 'notion').length === 3 && !ofMember(0, 'notion').length, `Notion: 마지막 수정자·자기 댓글만, 하위 페이지 포함 (${[0, 1, 2].map(i => ofMember(i, 'notion').length)})`);
     ok(works.filter(w => w.work.ai).length === 3, 'AI 공동 작성 커밋 표시');
+    ok(ofMember(1, 'gdocs').length === 2 && ofMember(0, 'gdocs').length === 2 && !ofMember(2, 'gdocs').length, `Google 문서: 수정한 날·댓글만 (${[0, 1, 2].map(i => ofMember(i, 'gdocs').length)})`);
     ok(works.every(w => w.url === ''), '가상 데이터에는 갈 곳 없는 링크가 없음');
     ok(m[3].connections.github === 'ok' && !m[3].connections.figma, '도윤은 GitHub만 연결 (연동 안 됨 표시용)');
     const objs = i => S.roomDecorGroups(S.state.items.filter(x => x.memberId === m[i].id)).map(g => g.decor.id);

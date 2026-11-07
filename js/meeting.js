@@ -559,7 +559,7 @@ function callOptionsHTML() {
 function renderMeetings() {
   if (!cloudOn()) {
     app.innerHTML = `
-    <section><div class="page-head"><div><h1>🎙️ 회의</h1></div></div>
+    <section><div class="page-head"><div><p class="eyebrow">CALLS · 음성·화상</p><h1>회의</h1></div></div>
       <p class="card">음성·화상 회의는 <b>온라인 방</b>에서만 할 수 있어요. 로그인한 뒤 🏠 방 목록에서 방을 만들거나 참여해 주세요.</p></section>`;
     return;
   }
@@ -569,7 +569,8 @@ function renderMeetings() {
   <section>
     <div class="page-head">
       <div>
-        <h1>🎙️ 회의</h1>
+        <p class="eyebrow">CALLS · 음성·화상</p>
+        <h1>회의</h1>
         <p class="muted">방 팀원끼리 음성·화상으로 회의하고, 각자 자기 마이크를 받아써 발언자별 녹취록과 요약을 남겨요. 회의 중에도 다른 화면을 볼 수 있어요.</p>
       </div>
     </div>
@@ -602,7 +603,7 @@ function renderMeetings() {
     <h2 class="past-title">지난 회의 <span class="muted sm">${past.length}건</span></h2>
     <div class="past-list">${past.map(c => `
       <article class="card past-call">
-        <header><b>${c.source === 'meet' ? '📥 ' : ''}${esc(c.title)}</b>
+        <header><b>${c.source === 'meet' ? '📥 ' : c.source === 'kakao' ? '💬 ' : ''}${esc(c.title)}</b>
           <span class="muted sm">${fmtDate(c.startedAt)} · 약 ${Math.max(1, Math.round(((c.endedAt || c.startedAt) - c.startedAt) / 60000))}분 · 녹취 ${c.lineCount ?? 0}줄</span></header>
         ${c.startedBy === myUid() || cloud.owner
           ? `<label class="check sm"><input type="checkbox" data-mt="share:${c.id}" ${c.shareProf ? 'checked' : ''}> 🎓 교수자에게 이 회의 <b>요약</b> 공유 <span class="muted">(녹취 원문은 공유하지 않아요)</span></label>`

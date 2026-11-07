@@ -8,6 +8,7 @@
 //   POST /v1/oauth/:provider/refresh  만료되는 토큰 갱신 (Figma 90일 등)        — 로그인 필요
 //   GET  /v1/usage              오늘 쓴 요청 수·이번 달 쓴 금액                 — 로그인 필요
 //   GET  /v1/turn               회의 중계 서버(TURN) 임시 자격               — 로그인 필요
+//   GET|POST /v1/proxy/{github|figma|notion}/{경로}  읽기 전용 콘텐츠 중계 (X-BR-Token = 그 서비스 토큰) — 로그인 필요
 //
 // 비용 (SSRD PR-1, Win-AGRE-5): 요약에는 소형 모델(Claude Haiku 5.5)만, 사용자별 하루 요청 수, 하루·월 예산(원)을 넘으면 429.
 // 앱은 429·오류를 받으면 규칙 기반 요약으로 돌아간다.
@@ -31,7 +32,7 @@ function corsHeaders(req, env) {
   return {
     'Access-Control-Allow-Origin': allowed.includes(origin) ? origin : allowed[0] || '',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-BR-Token',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   };
@@ -362,30 +363,71 @@ async function turnCredentials(env, user) {
 
 // ---------- 라우터 ----------
 
-// ---------- GitHub 콘텐츠 프록시 (읽기 전용, 무상태 토큰 패스스루) ----------
-// 허용 경로만(SSRF·남용 방지). 그 외 403. 클라이언트 토큰은 저장하지 않고 Bearer로 전달만 한다.
-const GH_ALLOW = [
-  /^repos\/[^/]+\/[^/]+\/commits(\/[^?]*)?$/,
-  /^repos\/[^/]+\/[^/]+\/(pulls|issues)(\/\d+)?$/,
-  /^repos\/[^/]+\/[^/]+\/pulls\/\d+\/(reviews|comments)$/,
-  /^user$/,
-  /^users\/[^/]+$/,
-];
+// ---------- 콘텐츠 프록시 (GitHub·Figma·Notion, 읽기 전용, 무상태 토큰 패스스루) ----------
+// 브라우저가 직접 부르는 대신 여기로 보내면 CORS·레이트리밋·사용량 한도를 한곳에서 다룬다.
+// 허용 경로·메서드만(SSRF·남용 방지). 그 외 403/405. 클라이언트 토큰(X-BR-Token)은 저장하지 않고 그 서비스 형식으로 바꿔 전달만 한다.
+const NOTION_ID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const PROXY_SOURCES = {
+  github: {
+    base: env => env.GITHUB_API_URL || 'https://api.github.com',
+    allow: [
+      ['GET', /^repos\/[^/]+\/[^/]+\/commits(\/[^?/]*)?$/],
+      ['GET', /^repos\/[^/]+\/[^/]+\/(pulls|issues)(\/\d+)?$/],
+      ['GET', /^repos\/[^/]+\/[^/]+\/pulls\/\d+\/(reviews|comments)$/],
+      ['GET', /^repos\/[^/]+\/[^/]+\/issues\/comments$/],
+      ['GET', /^repos\/[^/]+\/[^/]+\/issues\/\d+\/comments$/],
+      ['GET', /^user$/],
+      ['GET', /^users\/[^/]+$/],
+    ],
+    headers: token => ({ Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(token ? { Authorization: `Bearer ${token}` } : {}) }),
+  },
+  figma: {
+    base: env => env.FIGMA_API_URL || 'https://api.figma.com',
+    allow: [
+      ['GET', /^v1\/me$/],
+      ['GET', /^v1\/files\/[A-Za-z0-9]+(\/(versions|comments|nodes|images))?$/],
+      ['GET', /^v1\/images\/[A-Za-z0-9]+$/],
+    ],
+    // 개인 액세스 토큰은 X-Figma-Token, OAuth 토큰은 'Bearer …' 그대로 Authorization
+    headers: token => (token.startsWith('Bearer ') ? { Authorization: token } : { 'X-Figma-Token': token }),
+  },
+  notion: {
+    base: env => env.NOTION_API_URL || 'https://api.notion.com',
+    allow: [
+      ['GET', /^v1\/users(\/me)?$/],
+      ['GET', new RegExp(`^v1/pages/${NOTION_ID}$`)],
+      ['GET', new RegExp(`^v1/blocks/${NOTION_ID}(/children)?$`)],
+      ['GET', new RegExp(`^v1/databases/${NOTION_ID}$`)],
+      ['GET', /^v1\/comments$/],
+      ['POST', new RegExp(`^v1/databases/${NOTION_ID}/query$`)],
+      ['POST', /^v1\/search$/],
+    ],
+    headers: token => ({ Authorization: `Bearer ${token}`, 'Notion-Version': '2022-06-28' }),
+  },
+};
+const PASS_HEADERS = ['Content-Type', 'ETag', 'Last-Modified', 'Retry-After', 'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset', 'Link'];
 
-async function githubProxy(req, env, user) {
-  if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed', '읽기 전용(GET)만 지원해요');
+async function contentProxy(req, env, user, source) {
+  const src = PROXY_SOURCES[source];
+  if (!src) throw new HttpError(404, 'unknown_source');
+  if (req.method !== 'GET' && req.method !== 'POST') throw new HttpError(405, 'method_not_allowed', '읽기 요청(GET·조회 POST)만 지원해요');
   const url = new URL(req.url);
-  const path = url.pathname.replace(/^\/v1\/proxy\/github\//, '');
-  if (!GH_ALLOW.some(re => re.test(path))) throw new HttpError(403, 'path_not_allowed', '허용되지 않은 GitHub 경로예요');
+  const path = url.pathname.replace(new RegExp(`^/v1/proxy/${source}/`), '');
+  const rule = src.allow.find(([, re]) => re.test(path));
+  if (!rule) throw new HttpError(403, 'path_not_allowed', `허용되지 않은 ${source} 경로예요`);
+  if (rule[0] !== req.method) throw new HttpError(405, 'method_not_allowed', '이 경로는 읽기 전용이에요');
   await checkLimits(env, user.uid);
   const token = req.headers.get('X-BR-Token') || '';
-  const base = env.GITHUB_API_URL || 'https://api.github.com';
-  const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'brainroom', 'X-GitHub-Api-Version': '2022-11-28' };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const upstream = await fetch(`${base}/${path}${url.search}`, { headers });
+  const headers = { 'User-Agent': 'brainroom', ...src.headers(token) };
+  let body;
+  if (req.method === 'POST') {
+    body = JSON.stringify(await readJson(req)); // 크기·형식 검사를 거친 JSON만 전달
+    headers['Content-Type'] = 'application/json';
+  }
+  const upstream = await fetch(`${src.base(env)}/${path}${url.search}`, { method: req.method, headers, body });
   await recordUsage(env, user.uid, {}); // 프록시 요청 1건 = 사용량 1 (토큰 비용 없음)
   const out = {};
-  for (const h of ['Content-Type', 'ETag', 'Last-Modified', 'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset', 'Link']) {
+  for (const h of PASS_HEADERS) {
     const v = upstream.headers.get(h);
     if (v) out[h] = v;
   }
@@ -403,7 +445,7 @@ function config(env) {
   }
   return {
     features: { summarize: Boolean(env.ANTHROPIC_API_KEY), vision: Boolean(env.ANTHROPIC_API_KEY), turn: Boolean(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN), oauth },
-    proxy: { github: true }, // GitHub 콘텐츠 프록시(읽기 전용)는 비밀키가 필요 없어 항상 사용 가능
+    proxy: { github: true, figma: true, notion: true }, // 콘텐츠 프록시(읽기 전용)는 비밀키가 필요 없어 항상 사용 가능
     model: MODEL,
     limits: { dailyRequestsPerUser: Number(env.DAILY_REQUESTS_PER_USER || 60), monthlyBudgetKRW: Number(env.MONTHLY_BUDGET_KRW || 50000), dailyBudgetKRW: Number(env.DAILY_BUDGET_KRW || 5000) },
   };
@@ -419,7 +461,8 @@ export default {
       const origin = req.headers.get('Origin');
       if (origin && !allowedOrigins(env).includes(origin)) throw new HttpError(403, 'bad_origin');
       const user = await verifyFirebaseUser(req, env);
-      if (pathname.startsWith('/v1/proxy/github/')) return await githubProxy(req, env, user);
+      const px = pathname.match(/^\/v1\/proxy\/([a-z]+)\//);
+      if (px) return await contentProxy(req, env, user, px[1]);
       if (req.method === 'POST' && pathname === '/v1/summarize') return json(req, env, await summarize(req, env, user));
       if (req.method === 'POST' && pathname === '/v1/vision') return json(req, env, await vision(req, env, user));
       const oauth = pathname.match(/^\/v1\/oauth\/([a-z]+)(\/refresh)?$/);

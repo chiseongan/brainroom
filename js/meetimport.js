@@ -111,19 +111,26 @@ async function importMeet(form) {
 // ---------- Google Drive에서 고르기 (Picker) ----------
 // Firebase Google 로그인에 drive.file 권한을 더해 토큰을 받고(고른 파일만 읽을 수 있는 권한),
 // Picker로 고른 Google Docs 녹취록을 글자로 내보내 읽는다.
-let driveAuth = null; // { token, until }
+const googleAuth = {}; // scope → { token, until }
 
-async function driveToken() {
-  if (driveAuth && Date.now() < driveAuth.until) return driveAuth.token;
+// Google API 액세스 토큰 (Firebase Google 로그인에 범위를 더해 다시 승인받는다, 50분 동안 기억)
+// interactive=false 면 승인 창을 띄우지 않고, 기억해 둔 토큰이 없으면 null (자동 가져오기에서 창이 불쑥 뜨지 않게)
+async function googleToken(scope, { interactive = true } = {}) {
+  const cached = googleAuth[scope];
+  if (cached && Date.now() < cached.until) return cached.token;
+  if (!interactive) return null;
+  if (!AUTH_ENABLED || !authUser) throw new Error('google_login_required');
   const provider = new firebase.auth.GoogleAuthProvider();
-  provider.addScope('https://www.googleapis.com/auth/drive.file');
+  provider.addScope(scope);
   provider.setCustomParameters({ login_hint: authUser.email || '' });
   const res = await firebase.auth().currentUser.reauthenticateWithPopup(provider);
   const token = res.credential?.accessToken;
-  if (!token) throw new Error('no drive token');
-  driveAuth = { token, until: Date.now() + 50 * 60 * 1000 };
+  if (!token) throw new Error('no google token');
+  googleAuth[scope] = { token, until: Date.now() + 50 * 60 * 1000 };
   return token;
 }
+
+const driveToken = () => googleToken('https://www.googleapis.com/auth/drive.file');
 
 function loadScriptOnce(src) {
   return new Promise((resolve, reject) => {
@@ -177,6 +184,7 @@ function meetImportCardHTML() {
       <div class="modal-actions" style="justify-content:flex-start">
         ${AUTH_ENABLED && authUser ? '<button type="button" class="btn" data-meet="drive">Google Drive에서 고르기</button>' : ''}
         <label class="btn file-btn">파일 올리기 (.txt · .vtt · .sbv)<input type="file" id="meetFile" accept=".txt,.vtt,.sbv,.srt,text/plain" hidden></label>
+        <label class="btn file-btn">💬 카카오톡 대화 올리기<input type="file" id="kakaoFile" accept=".txt,.csv,text/plain,text/csv" hidden></label>
       </div>
       <p class="muted sm">Drive에서는 <b>고른 파일만</b> 읽어요. Meet 녹취록은 보통 회의를 연 사람의 Drive "Meet Recordings" 폴더에 있어요.</p>
     </div>`;

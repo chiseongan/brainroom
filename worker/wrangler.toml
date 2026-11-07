@@ -25,9 +25,9 @@ DAILY_REQUESTS_PER_USER = "60"
 NOTION_CLIENT_ID = ""
 FIGMA_CLIENT_ID = ""
 GITHUB_CLIENT_ID = ""
-# GitHub 콘텐츠 프록시(GET /v1/proxy/github/*)는 비밀키가 필요 없어 배포하면 바로 켜진다
-# (클라이언트 토큰을 Bearer로 전달만 하고 저장하지 않음, 읽기 전용 경로 allowlist). 기본 upstream은 api.github.com
-# GITHUB_API_URL = "https://api.github.com"  # 테스트에서만 다른 주소로 주입
+# 콘텐츠 프록시(/v1/proxy/{github|figma|notion}/*)는 비밀키가 필요 없어 배포하면 바로 켜진다
+# (클라이언트 토큰을 그 서비스 형식으로 전달만 하고 저장하지 않음, 읽기 전용 경로 allowlist). 기본 upstream은 각 공식 API
+# GITHUB_API_URL / FIGMA_API_URL / NOTION_API_URL  # 테스트에서만 다른 주소로 주입
 
 # 사용량·예산 기록 (없으면 인스턴스 메모리에만 기록돼 상한이 정확하지 않다)
 # npx wrangler kv namespace create USAGE  → 나온 id를 아래에
