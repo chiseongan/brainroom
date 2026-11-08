@@ -1105,3 +1105,83 @@ main.landing { padding: 0; max-width: none; }
 .setup-card h1 { font-size: clamp(32px, 4vw, 44px); }
 .setup-card .logo { font-size: 44px; }
 .lead { letter-spacing: -.02em; }
+
+/* =====================================================================
+   깔끔하게 한 번 더 (채연님 UI 초안 참고)
+   구조·색·시작화면은 그대로 두고: 밝은 종이 카드 · 넓은 여백 · 옅은 헤어라인
+   · 색 띠 대신 작은 점 · 제목 끝 포인트 마침표 · 알약 모양 필터 · 조용한 태그
+   ===================================================================== */
+:root {
+  --paper: #fcf9f3;                                            /* 모래 위에 놓인 밝은 종이 카드 */
+  --hair: color-mix(in srgb, var(--line) 75%, var(--paper));   /* 카드 테두리용 옅은 선 */
+  --tint: color-mix(in srgb, var(--primary) 9%, var(--paper)); /* 선택 상태의 옅은 테라코타 */
+  --radius-card: 10px;
+  --lift: 0 1px 0 rgba(43, 33, 24, .03), 0 14px 32px -22px rgba(43, 33, 24, .45);
+}
+main { padding-top: 40px; }
+
+/* 제목: 끝에 테라코타 마침표 하나, 라벨 앞에 작은 점 하나 */
+.page-head h1:not(.room-title)::after, .feed-head h1::after, .rail-card h2::after { content: '.'; color: var(--primary); }
+.page-head .eyebrow, .feed-head .eyebrow, .rail-card .eyebrow { display: flex; align-items: center; gap: 8px; font-size: 10.5px; }
+.page-head .eyebrow::before, .feed-head .eyebrow::before, .rail-card .eyebrow::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--primary); }
+.page-head { border-bottom-color: var(--hair); padding-bottom: 24px; margin-bottom: 32px; }
+.page-head .muted, .feed-count { font-size: 14px; line-height: 1.7; }
+
+/* 면: 밝은 종이 카드 + 옅은 선 + 둥근 모서리, 색 띠는 빼고 사람 색은 점으로만 */
+.card, .item-card, .report-card, .ai-card, .quest, .cloud-box, .manage-row, .notice, .meeting-card, .room-card {
+  background: var(--paper); border-color: var(--hair); border-radius: var(--radius-card);
+}
+.report-card, .ai-card { border-top-width: 1px; }
+.item-card { border-left-width: 1px; }
+.room-card:hover, .meeting-card:hover { border-color: var(--line); box-shadow: var(--lift); }
+
+/* 코크핏 피드: 헤어라인 목록 → 여백 있는 카드 */
+.feed-search input { background: var(--paper); border-color: var(--hair); border-radius: 8px; padding: 11px 14px; }
+.feed-list { gap: 10px; border-top: 0; }
+.feed-card {
+  grid-template-columns: 36px 1fr; gap: 14px;
+  background: var(--paper); border: 1px solid var(--hair); border-radius: var(--radius-card);
+  padding: 20px 22px 18px; transition: border-color .15s, box-shadow .2s;
+}
+.feed-card:hover { background: var(--paper); border-color: var(--line); box-shadow: var(--lift); }
+.fc-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: var(--bg); font-size: 16px; line-height: 1; }
+.fc-who { font-size: 12.5px; margin-top: 4px; }
+.fc-prev { opacity: 1; color: var(--muted); }
+.fc-tags { margin-top: 12px; gap: 4px 10px; }
+.fc-tags .chip:not(.fc-conn) { border: 0; padding: 0; background: none; color: var(--muted); font-size: 12px; }
+.fc-tags .chip:not(.fc-conn)::before { content: '#'; opacity: .6; }
+.fc-tags .chip:not(.fc-conn):nth-child(n+4) { display: none; }   /* 태그는 셋까지만, 전부는 상세 패널에서 */
+.fc-conn { border-radius: 999px; padding: 1px 9px; background: var(--tint); color: var(--primary); }
+.fc-link { margin-left: auto; }
+
+/* 필터: 알약 모양, 선택하면 옅은 테라코타 */
+.chips .fchip { border-radius: 999px; padding: 5px 13px; background: var(--paper); border-color: var(--hair); font-size: 12.5px; }
+.chips .fchip:hover { border-color: var(--line); }
+.chips .fchip.on { background: var(--tint); border-color: color-mix(in srgb, var(--primary) 45%, var(--paper)); color: var(--primary); font-weight: 650; }
+
+/* 사이드레일: 먹색 윗선 → 종이 카드 */
+.rail { gap: 14px; }
+.rail-card { background: var(--paper); border: 1px solid var(--hair); border-radius: var(--radius-card); padding: 20px 20px 18px; }
+.rail-card h2 { font-size: 19px; margin: 2px 0 12px; }
+.rail-list { gap: 11px; }
+.rail-add input { border-radius: 8px; }
+.ms-status, .dl-status { border-radius: 999px; background: var(--bg); border-color: transparent; }
+.ms-status.s-done, .dl-status.s-submitted { background: color-mix(in srgb, var(--ok) 12%, var(--paper)); border-color: transparent; color: var(--ok); }
+.ms-status.s-doing, .dl-status.s-review { background: var(--tint); border-color: transparent; color: var(--primary); }
+
+/* 타임라인: 왼쪽 색 띠 대신 사람 점, 날짜는 작은 라벨, 출처는 조용한 링크 */
+.tl-day { font-size: 12px; font-weight: 650; letter-spacing: .08em; color: var(--muted); margin: 32px 0 10px; }
+.timeline { gap: 8px; border-left: 1px solid var(--hair); margin-left: 4px; padding-left: 18px; }
+.tl-row { background: var(--paper); border: 1px solid var(--hair); border-left-width: 1px; border-radius: var(--radius-card); padding: 16px 20px; gap: 18px; }
+.tl-row.decision { background: var(--paper); border-color: color-mix(in srgb, var(--ok) 30%, var(--paper)); }
+.tl-time { padding-top: 1px; font-variant-numeric: tabular-nums; }
+.tl-head { color: var(--muted); }
+.tl-body > b { font-size: 15px; letter-spacing: -.03em; }
+.vis-badge, .vis-badge.vis-me, .vis-badge.vis-prof { background: transparent; color: var(--muted); padding: 0; }
+.src-link { background: none; padding: 0; color: var(--muted); }
+.src-link:hover { color: var(--primary); }
+
+/* 입력: 둥글고 옅게 */
+input, textarea, select { border-radius: 8px; border-color: var(--hair); background: var(--paper); }
+.filters select { border-radius: 999px; padding: 6px 12px; }
+.count { background: color-mix(in srgb, var(--bg) 45%, var(--paper)); border: 1px solid var(--hair); border-radius: 8px; }
