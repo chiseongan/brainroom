@@ -1185,3 +1185,101 @@ main { padding-top: 40px; }
 input, textarea, select { border-radius: 8px; border-color: var(--hair); background: var(--paper); }
 .filters select { border-radius: 999px; padding: 6px 12px; }
 .count { background: color-mix(in srgb, var(--bg) 45%, var(--paper)); border: 1px solid var(--hair); border-radius: 8px; }
+
+/* ======================================================================
+   인터랙션 층: 커서에 반응하는 빛·기울기·자석, 화면 전환, 등장 순서, ⌘K 팔레트
+   값은 js/motion.js·js/palette.js가 CSS 변수로 넘긴다. 동작 줄이기 설정에서는 전부 멈춘다 (위의 reduce 규칙)
+   ====================================================================== */
+:root { --ease-out: cubic-bezier(.22, 1, .36, 1); --ease-spring: cubic-bezier(.34, 1.56, .64, 1); }
+
+/* 화면 전환: 새 화면이 아래에서 살짝 떠오른다 */
+@keyframes page-enter { from { opacity: 0; transform: translateY(10px); } }
+.page-enter { animation: page-enter .42s var(--ease-out) both; }
+
+/* 목록은 차례로 등장한다 (앞 10개까지) */
+@keyframes rise-in { from { opacity: 0; transform: translateY(14px) scale(.985); } }
+.page-enter .feed-card, .page-enter .tl-row, .page-enter .room-card, .page-enter .meeting-card, .page-enter .rail-card,
+.page-enter .report-card, .page-enter .quest, .page-enter .integ-card, .page-enter .meeting-list .card { animation: rise-in .5s var(--ease-out) both; }
+.page-enter :is(.feed-card, .tl-row, .room-card, .rail-card, .report-card, .quest):nth-child(2) { animation-delay: 40ms; }
+.page-enter :is(.feed-card, .tl-row, .room-card, .rail-card, .report-card, .quest):nth-child(3) { animation-delay: 80ms; }
+.page-enter :is(.feed-card, .tl-row, .room-card, .rail-card, .report-card, .quest):nth-child(4) { animation-delay: 120ms; }
+.page-enter :is(.feed-card, .tl-row, .room-card, .rail-card, .report-card, .quest):nth-child(5) { animation-delay: 160ms; }
+.page-enter :is(.feed-card, .tl-row, .room-card, .rail-card, .report-card, .quest):nth-child(6) { animation-delay: 200ms; }
+.page-enter :is(.feed-card, .tl-row, .room-card, .rail-card, .report-card, .quest):nth-child(7) { animation-delay: 240ms; }
+.page-enter :is(.feed-card, .tl-row, .room-card, .rail-card, .report-card, .quest):nth-child(8) { animation-delay: 280ms; }
+.page-enter :is(.feed-card, .tl-row, .room-card, .rail-card, .report-card, .quest):nth-child(n+9) { animation-delay: 320ms; }
+
+/* 커서를 따라오는 빛: 카드 표면 위에 아주 옅은 테라코타 광원 */
+.motion-fine :is(.feed-card, .rail-card, .card, .room-card, .meeting-card, .report-card, .ai-card, .item-card, .quest, .tl-row) { position: relative; isolation: isolate; }
+.motion-fine :is(.feed-card, .rail-card, .card, .room-card, .meeting-card, .report-card, .ai-card, .item-card, .quest, .tl-row)::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1;
+  background: radial-gradient(220px circle at var(--mx, 50%) var(--my, 50%), color-mix(in srgb, var(--primary) 9%, transparent), transparent 70%);
+  opacity: 0; transition: opacity .35s var(--ease-out);
+}
+.motion-fine :is(.feed-card, .rail-card, .card, .room-card, .meeting-card, .report-card, .ai-card, .item-card, .quest, .tl-row):hover::before { opacity: 1; }
+
+/* 3D 기울기: 방 카드·회의실 카드는 커서 쪽으로 살짝 기운다 */
+.motion-fine .room-card, .motion-fine .meeting-card {
+  transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(0);
+  transition: transform .55s var(--ease-spring), box-shadow .35s var(--ease-out), border-color .2s;
+  transform-style: preserve-3d; will-change: transform;
+}
+.motion-fine :is(.room-card, .meeting-card).is-tilting { transition-duration: .08s, .35s, .2s; }
+.motion-fine :is(.room-card, .meeting-card):hover { transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(-4px); box-shadow: 0 22px 48px -18px rgba(43, 33, 24, .45), 0 2px 0 rgba(43, 33, 24, .03); }
+.motion-fine .room-card .room, .motion-fine .meeting-card .mc-table { transform: translateZ(18px); }
+.motion-fine .lp-step { transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)); transition: transform .55s var(--ease-spring); will-change: transform; }
+.motion-fine .lp-step.is-tilting { transition-duration: .08s; }
+
+/* 회의실 그림: 커서를 따라 아주 조금 기울어 입체감 */
+.motion-fine .hall { transform: perspective(1400px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)); transition: transform .6s var(--ease-spring); will-change: transform; transform-style: preserve-3d; }
+.motion-fine .hall.is-tilting { transition-duration: .1s; }
+
+/* 자석 단추: 가까이 가면 커서 쪽으로 끌려온다. 누르면 살짝 눌린다 */
+.motion-fine .lp-button, .motion-fine .btn.primary { transform: translate(var(--tx, 0px), var(--ty, 0px)); transition: transform .25s var(--ease-out), background .25s, color .25s, border-color .25s, box-shadow .25s; }
+.motion-fine .lp-button:active, .motion-fine .btn.primary:active { transform: translate(var(--tx, 0px), var(--ty, 0px)) scale(.97); }
+.btn.primary { box-shadow: 0 1px 0 rgba(255,255,255,.12) inset, 0 6px 16px -10px rgba(156, 67, 29, .7); }
+.btn.primary:hover { box-shadow: 0 1px 0 rgba(255,255,255,.12) inset, 0 10px 22px -10px rgba(156, 67, 29, .8); }
+
+/* 칩·단추의 작은 반응 */
+.chips .fchip, .btn, #nav button { transition: background .18s, color .18s, border-color .18s, transform .18s var(--ease-out), box-shadow .18s; }
+.chips .fchip:active { transform: scale(.96); }
+#nav button::after { transition: left .25s var(--ease-out), right .25s var(--ease-out); }
+
+/* 토스트는 튀어 오르듯 */
+@keyframes toast-in { from { opacity: 0; transform: translateY(14px) scale(.96); } }
+.toast { animation: toast-in .45s var(--ease-spring); }
+
+/* 불러오는 중: 글자 앞에 숨 쉬는 점 */
+@keyframes breathe { 0%, 100% { transform: scale(.7); opacity: .4; } 50% { transform: scale(1); opacity: 1; } }
+.loading { gap: 10px; font-size: 15px; }
+.loading::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--primary); animation: breathe 1.2s ease-in-out infinite; }
+
+/* 상단바 ⌘K 단추 */
+.cmdk-btn { display: inline-flex; align-items: center; gap: 8px; padding: 5px 8px 5px 10px; border: 1px solid var(--hair); border-radius: 8px; background: var(--paper); color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; transition: border-color .2s, color .2s, background .2s; }
+.cmdk-btn:hover { border-color: var(--line); color: var(--ink); background: var(--surface); }
+.cmdk-btn kbd, .cmdk kbd { font: inherit; font-size: 11px; font-weight: 600; letter-spacing: .02em; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); line-height: 1.5; }
+@media (max-width: 760px) { .cmdk-btn span { display: none; } }
+
+/* ⌘K 팔레트 */
+@keyframes cmdk-in { from { opacity: 0; transform: translateY(-8px) scale(.98); } }
+@keyframes cmdk-bg { from { opacity: 0; } }
+.cmdk { position: fixed; inset: 0; z-index: 90; display: flex; justify-content: center; align-items: flex-start; padding: min(14vh, 120px) 16px 16px; background: rgba(43, 33, 24, .32); backdrop-filter: blur(3px); animation: cmdk-bg .15s ease-out; }
+.cmdk.out { opacity: 0; transition: opacity .12s; }
+.cmdk-card { width: min(640px, 100%); max-height: min(70vh, 560px); display: flex; flex-direction: column; background: var(--paper); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 30px 80px -20px rgba(43, 33, 24, .55), 0 0 0 1px rgba(255,255,255,.4) inset; overflow: hidden; animation: cmdk-in .22s var(--ease-out); }
+.cmdk-search { display: flex; align-items: center; gap: 10px; padding: 6px 12px 6px 14px; border-bottom: 1px solid var(--hair); }
+.cmdk-search-icon { color: var(--muted); font-size: 18px; }
+.cmdk-search input { flex: 1; border: 0; background: transparent; padding: 12px 0; font-size: 16px; border-radius: 0; }
+.cmdk-search input:focus { outline: none; border: 0; }
+.cmdk-list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; overscroll-behavior: contain; }
+.cmdk-group { padding: 10px 10px 4px; font-size: 11px; font-weight: 700; letter-spacing: .1em; color: var(--muted); text-transform: uppercase; }
+.cmdk-item { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 9px; cursor: pointer; color: var(--ink); }
+.cmdk-item[aria-selected="true"] { background: var(--tint); }
+.cmdk-item[aria-selected="true"] .cmdk-label { color: var(--primary); }
+.cmdk-icon { flex: none; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 7px; background: var(--bg); font-size: 14px; color: var(--muted); }
+.cmdk-dot::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--mc); }
+.cmdk-body { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.cmdk-label { font-weight: 600; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmdk-hint { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmdk-empty { margin: 0; padding: 26px 16px; text-align: center; color: var(--muted); font-size: 14px; }
+.cmdk-foot { display: flex; gap: 16px; padding: 8px 14px; border-top: 1px solid var(--hair); color: var(--muted); font-size: 12px; background: color-mix(in srgb, var(--bg) 40%, var(--paper)); }
+.cmdk-foot kbd { margin-right: 4px; }
