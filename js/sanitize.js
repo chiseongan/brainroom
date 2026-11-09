@@ -42,7 +42,7 @@ function cleanMember(raw, index = 0) {
   fix(m, 'pinnedIdeaId', isIdOrNull, null);
   if (m.connections) {
     const c = {};
-    ['github', 'figma', 'notion'].forEach(k => { if (['ok', 'error'].includes(m.connections[k])) c[k] = m.connections[k]; });
+    ['github', 'figma', 'notion', 'gdocs'].forEach(k => { if (['ok', 'error'].includes(m.connections[k])) c[k] = m.connections[k]; });
     m.connections = c;
   }
   return m;
@@ -83,7 +83,7 @@ function cleanItem(raw, id = raw?.id) {
     const spec = {
       ai: { tool: [isStr, asStr], purpose: [p => PURPOSE_BY_ID[p], 'etc'], transcript: [isStr, asStr], sourceId: [isStr, asStr], summaryBy: [isStr, ''], decisions: [isStrList, strList] },
       talk: { callId: [isId, ''], lineCount: [isNum, 0], keywords: [isStrList, strList], transcript: [isStr, asStr], decisions: [isStrList, strList] },
-      work: { source: [s => s in { github: 1, figma: 1, notion: 1 }, ''], kind: [isId, ''], repo: [isStr, asStr], file: [isStr, asStr], page: [isStr, asStr], keywords: [isStrList, strList], count: [isNum, 0], ai: [v => typeof v === 'boolean', false] },
+      work: { source: [s => s in { github: 1, figma: 1, notion: 1, gdocs: 1 }, ''], kind: [isId, ''], repo: [isStr, asStr], file: [isStr, asStr], page: [isStr, asStr], keywords: [isStrList, strList], count: [isNum, 0], ai: [v => typeof v === 'boolean', false] },
     }[key];
     i[key] = cleanSub(i[key], spec);
     if (i[key] === null) delete i[key];
@@ -137,6 +137,26 @@ function cleanCorrection(raw, id = raw?.id) {
   return c;
 }
 
+function cleanMilestone(raw, id = raw?.id) {
+  if (!raw || !isId(id)) return null;
+  const m = { ...raw, id, title: asStr(raw.title).slice(0, 500), phase: asStr(raw.phase).slice(0, 60), dueAt: raw.dueAt == null ? null : finite(raw.dueAt), createdAt: finite(raw.createdAt) };
+  if (!['todo', 'doing', 'done'].includes(m.status)) m.status = 'todo';
+  if (!['phase', 'present', 'custom'].includes(m.kind)) m.kind = 'custom';
+  fix(m, 'createdBy', isIdOrNull, null);
+  return m;
+}
+
+function cleanDeliverable(raw, id = raw?.id) {
+  if (!raw || !isId(id)) return null;
+  const d = { ...raw, id, title: asStr(raw.title).slice(0, 500), createdAt: finite(raw.createdAt), dueAt: raw.dueAt == null ? null : finite(raw.dueAt) };
+  if (!['SSRD', 'SSAD', 'test', 'present', 'custom'].includes(d.docType)) d.docType = 'custom';
+  if (!['draft', 'review', 'submitted'].includes(d.status)) d.status = 'draft';
+  fix(d, 'ownerId', isIdOrNull, null);
+  fix(d, 'milestoneId', isIdOrNull, null);
+  d.url = cleanUrl(d.url);
+  return d;
+}
+
 const cleanLog = (raw, id = raw?.id) => (raw ? { ...raw, ...(id ? { id: asStr(id) } : {}), at: finite(raw.at), text: asStr(raw.text) } : null);
 
 function cleanCall(raw, id = raw?.id) {
@@ -151,7 +171,7 @@ function cleanCall(raw, id = raw?.id) {
   if ('attendees' in c) c.attendees = strList(c.attendees);
   if ('decisions' in c) c.decisions = strList(c.decisions);
   fix(c, 'lineCount', isNum, 0);
-  if ('source' in c && c.source !== 'meet') delete c.source;
+  if ('source' in c && !['meet', 'kakao'].includes(c.source)) delete c.source;
   return c;
 }
 
@@ -160,7 +180,7 @@ const cleanPeer = raw => ({ ...raw, name: asStr(raw?.name), uid: asStr(raw?.uid)
 
 function cleanLinks(raw) {
   const l = raw && typeof raw === 'object' ? raw : {};
-  return { ...l, ...('github' in l ? { github: asStr(l.github) } : {}), ...('figma' in l ? { figma: strList(l.figma) } : {}), ...('notion' in l ? { notion: strList(l.notion) } : {}) };
+  return { ...l, ...('github' in l ? { github: asStr(l.github) } : {}), ...('figma' in l ? { figma: strList(l.figma) } : {}), ...('notion' in l ? { notion: strList(l.notion) } : {}), ...('gdocs' in l ? { gdocs: strList(l.gdocs) } : {}) };
 }
 
 function cleanTeam(raw) {
@@ -181,6 +201,8 @@ function sanitizeWorkspace(ws) {
   ws.decisions = cleanList(ws.decisions, cleanDecision);
   ws.quests = cleanList(ws.quests, cleanQuest);
   ws.corrections = cleanList(ws.corrections, cleanCorrection);
+  ws.milestones = cleanList(ws.milestones, cleanMilestone);
+  ws.deliverables = cleanList(ws.deliverables, cleanDeliverable);
   ws.changeLog = cleanList(ws.changeLog, cleanLog);
   ws.calls = Array.isArray(ws.calls) ? cleanList(ws.calls, cleanCall) : ws.calls;
   ws.decisionDismissed = strList(ws.decisionDismissed);

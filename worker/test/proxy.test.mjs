@@ -47,6 +47,10 @@ const upstream = http.createServer(async (req, res) => {
   if (req.url === '/github-token') return send(200, { access_token: 'gho_x', scope: 'repo' });
   if (req.url === '/figma-token') return send(200, { access_token: 'figu_x', refresh_token: 'r', expires_in: 7776000, user_id_string: '123' });
   if (req.url === '/turn') return send(201, { iceServers: { urls: ['stun:stun.cloudflare.com:3478', 'turn:turn.cloudflare.com:3478?transport=udp'], username: 'u', credential: 'c' } });
+  // 가짜 GitHub·Figma·Notion API: 받은 경로·헤더·본문을 그대로 되돌려 준다 (…_API_URL=`${U}/gh|fg|nt`)
+  if (req.url.startsWith('/gh/')) return send(200, { ok: true, path: req.url.slice(3), auth: req.headers.authorization || '' });
+  if (req.url.startsWith('/fg/')) return send(200, { ok: true, path: req.url.slice(3), figmaToken: req.headers['x-figma-token'] || '', auth: req.headers.authorization || '' });
+  if (req.url.startsWith('/nt/')) return send(req.url.includes('nope') ? 404 : 200, { ok: true, path: req.url.slice(3), auth: req.headers.authorization || '', version: req.headers['notion-version'] || '', method: req.method, body: raw });
   send(404, {});
 });
 await new Promise(r => upstream.listen(0, r));
@@ -209,5 +213,68 @@ claudeMode = 'bad';
 const leak = await call('POST', '/v1/summarize', { kind: 'ai', text: 'x' }, await idToken({ sub: 'leak-check' }));
 claudeMode = 'ok';
 ok(leak.status === 400 && !JSON.stringify(leak.body).includes('internal secret detail'), 'upstream error details are not exposed');
+
+// ---------- GitHub 콘텐츠 프록시 (읽기 전용) ----------
+const ghEnv = { ...env, GITHUB_API_URL: `${U}/gh` };
+const ghTok = await idToken({ sub: 'gh-user' });
+const gh = async (method, path, { token, brToken, e = ghEnv } = {}) => {
+  const res = await worker.fetch(new Request(`https://proxy.test${path}`, {
+    method, headers: { Origin: 'http://localhost:5173', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(brToken ? { 'X-BR-Token': brToken } : {}) },
+  }), e);
+  return { status: res.status, body: await res.json().catch(() => null), cors: res.headers.get('Access-Control-Allow-Origin') };
+};
+
+seen.length = 0;
+const ghOk = await gh('GET', '/v1/proxy/github/repos/o/r/commits?per_page=5', { token: ghTok, brToken: 'ghp_test123' });
+ok(ghOk.status === 200, `GitHub 프록시 allowlist 경로 → 200 (${ghOk.status})`);
+ok(ghOk.cors === 'http://localhost:5173', 'GitHub 프록시 응답에 CORS 허용 헤더');
+const ghUp = seen.filter(x => x.path.startsWith('/gh/')).at(-1);
+ok(ghUp && ghUp.headers.authorization === 'Bearer ghp_test123', 'X-BR-Token이 Bearer로 변환되어 GitHub에 전달');
+ok(ghUp && ghUp.path === '/gh/repos/o/r/commits?per_page=5', `경로·쿼리 보존 (${ghUp && ghUp.path})`);
+ok((await gh('GET', '/v1/proxy/github/user/keys', { token: ghTok, brToken: 'x' })).status === 403, 'allowlist 밖 경로(user/keys) → 403');
+ok((await gh('POST', '/v1/proxy/github/repos/o/r/commits', { token: ghTok, brToken: 'x' })).status === 405, 'GET 외 메서드 → 405');
+ok((await gh('GET', '/v1/proxy/github/repos/o/r/commits', { brToken: 'x' })).status === 401, 'Firebase 로그인 없음 → 401');
+ok((await gh('GET', '/v1/proxy/github/repos/o/r/commits', { token: ghTok, brToken: 'x', e: { ...ghEnv, DAILY_REQUESTS_PER_USER: '0' } })).status === 429, '일일 한도 초과 → 429');
+ok((await call('GET', '/v1/config')).body.proxy?.github === true, 'config에 proxy.github:true');
+ok((await gh('GET', '/v1/proxy/github/repos/o/r/issues/comments?since=2026-01-01', { token: ghTok, brToken: 'x' })).status === 200, 'GitHub 이슈 댓글 경로 허용');
+
+// 브라우저 preflight: X-BR-Token 헤더를 허용해야 프록시 요청이 나갈 수 있다
+{
+  const pre = await worker.fetch(new Request('https://proxy.test/v1/proxy/github/user', { method: 'OPTIONS', headers: { Origin: 'http://localhost:5173', 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'authorization,x-br-token' } }), env);
+  ok(pre.status === 204 && /x-br-token/i.test(pre.headers.get('Access-Control-Allow-Headers') || ''), `preflight가 X-BR-Token을 허용 (${pre.headers.get('Access-Control-Allow-Headers')})`);
+}
+
+// ---------- Figma·Notion 콘텐츠 프록시 ----------
+const fgEnv = { ...env, FIGMA_API_URL: `${U}/fg`, NOTION_API_URL: `${U}/nt`, DAILY_REQUESTS_PER_USER: '100' };
+const pxTok = await idToken({ sub: 'px-user' }); // 하루 한도(5회)를 GitHub 시험과 나눠 쓰지 않게 따로
+const px = async (method, path, { brToken = 'tok', body, token = pxTok } = {}) => {
+  const res = await worker.fetch(new Request(`https://proxy.test${path}`, {
+    method, headers: { Origin: 'http://localhost:5173', Authorization: `Bearer ${token}`, 'X-BR-Token': brToken, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  }), fgEnv);
+  return { status: res.status, body: await res.json().catch(() => null) };
+};
+const f1 = await px('GET', '/v1/proxy/figma/v1/files/AbC123/versions', { brToken: 'figd_pat' });
+ok(f1.status === 200 && f1.body.path === '/v1/files/AbC123/versions' && f1.body.figmaToken === 'figd_pat' && !f1.body.auth, 'Figma 개인 토큰 → X-Figma-Token으로 전달');
+const f2 = await px('GET', '/v1/proxy/figma/v1/me', { brToken: 'Bearer figu_oauth' });
+ok(f2.status === 200 && f2.body.auth === 'Bearer figu_oauth' && !f2.body.figmaToken, 'Figma OAuth 토큰(Bearer …) → Authorization으로 전달');
+ok((await px('GET', '/v1/proxy/figma/v1/files/AbC123/images?ids=1:2', { brToken: 'x' })).status === 200 || (await px('GET', '/v1/proxy/figma/v1/images/AbC123?ids=1:2', { brToken: 'x' })).status === 200, 'Figma 그림 내보내기 경로 허용');
+ok((await px('GET', '/v1/proxy/figma/v1/teams/1/projects', { brToken: 'x' })).status === 403, 'Figma allowlist 밖(팀 목록) → 403');
+ok((await px('POST', '/v1/proxy/figma/v1/files/AbC123/comments', { brToken: 'x', body: { message: 'hi' } })).status === 405, 'Figma 쓰기(댓글 달기) → 405');
+const n1 = await px('GET', '/v1/proxy/notion/v1/pages/1a2b3c4d-5e6f-7081-9203-a4b5c6d7e8f9', { brToken: 'ntn_secret' });
+ok(n1.status === 200 && n1.body.auth === 'Bearer ntn_secret' && n1.body.version === '2022-06-28', 'Notion 토큰 → Bearer + Notion-Version 헤더');
+const n2 = await px('POST', '/v1/proxy/notion/v1/search', { brToken: 'ntn_secret', body: { query: '', page_size: 100 } });
+ok(n2.status === 200 && n2.body.method === 'POST' && JSON.parse(n2.body.body).page_size === 100, 'Notion 검색(POST) 본문 전달');
+ok((await px('POST', '/v1/proxy/notion/v1/databases/1a2b3c4d-5e6f-7081-9203-a4b5c6d7e8f9/query', { brToken: 'x', body: { page_size: 5 } })).status === 200, 'Notion 데이터베이스 조회(POST) 허용');
+ok((await px('GET', '/v1/proxy/notion/v1/blocks/1a2b3c4d-5e6f-7081-9203-a4b5c6d7e8f9/children?page_size=100', { brToken: 'x' })).status === 200, 'Notion 블록 본문 읽기 허용');
+ok((await px('POST', '/v1/proxy/notion/v1/pages', { brToken: 'x', body: { parent: {} } })).status === 403, 'Notion 페이지 만들기 → 403');
+ok((await px('GET', '/v1/proxy/notion/v1/databases/1a2b3c4d-5e6f-7081-9203-a4b5c6d7e8f9', { brToken: 'x' })).status === 200 && (await px('GET', '/v1/proxy/notion/v1/blocks/1a2b3c4d-5e6f-7081-9203-a4b5c6d7e8f9', { brToken: 'x' })).status === 200, 'Notion 상위(데이터베이스·블록) 조회 허용 (연결한 페이지 아래인지 확인용)');
+ok((await px('PATCH', '/v1/proxy/notion/v1/pages/1a2b3c4d-5e6f-7081-9203-a4b5c6d7e8f9', { brToken: 'x', body: {} })).status === 405, 'Notion 수정(PATCH) → 405');
+ok((await px('GET', '/v1/proxy/notion/v1/pages/nope', { brToken: 'x' })).status === 403, 'Notion 잘못된 id 형식 → 403 (SSRF 방지)');
+ok((await px('GET', '/v1/proxy/slack/v1/x', { brToken: 'x' })).status === 404, '모르는 소스 → 404');
+{
+  const c = (await call('GET', '/v1/config')).body.proxy;
+  ok(c.github === true && c.figma === true && c.notion === true, `config에 세 소스 모두 proxy:true (${JSON.stringify(c)})`);
+}
 
 upstream.close();

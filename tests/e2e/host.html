@@ -244,9 +244,9 @@ async function scenarioRoom() {
   A.document.querySelector(`.room-card[data-member="${mC}"]`).click();
   await until(() => A.eval(`state.view === 'room' && state.roomId === '${mC}'`), 3000);
   ok(A.eval(`state.roomId === '${mC}'`), '전체 보기 카드로 이동');
-  A.document.querySelector('#nav [data-go="room"]').click();
+  A.eval(`go('room', state.meId)`); // 방/오피스는 이제 nav가 아닌 공간(베타)에서 접근
   await until(() => A.eval(`state.view === 'room' && (state.roomId === state.meId || !state.roomId)`), 3000);
-  ok(A.eval(`state.view === 'room' && (state.roomId === state.meId || !state.roomId)`), '상단 메뉴로 내 방 이동');
+  ok(A.eval(`state.view === 'room' && (state.roomId === state.meId || !state.roomId)`), '내 방으로 이동 (공간)');
   // 온라인 갱신이 오는 중에도 방이 유지된다
   B.eval(`addItem({ memberId: state.meId, type: 'memo', title: '방 이동 중 갱신', content: '내용', visibility: 'team' })`);
   await until(() => A.eval(`state.items.some(i => i.title === '방 이동 중 갱신')`));
@@ -446,7 +446,49 @@ async function scenarioCalls({ A, B, C, T, mA, mB }) {
   await B.eval('syncMyTalks()');
   await until(async () => (await list(`teams/${T}/items`)).some(i => i.type === 'talk' && i.talk?.callId === imp.id && i.memberId === mB));
   ok(true, "화자로 짝지어진 B의 방에 '내가 한 말' 생성");
+
+  // 카카오톡 대화 가져오기 (온라인 방: 끝난 회의 + 팀원마다 '내가 한 말')
+  A.eval(`openKakaoImport('캡스톤 님과 카카오톡 대화\\n저장한 날짜 : 2026-11-06 18:00:00\\n\\n--------------- ${new Date().getFullYear()}년 ${new Date().getMonth() + 1}월 ${new Date().getDate()}일 월요일 ---------------\\n[안치성] [오후 1:00] 발표는 금요일로 확정하기로 했어요\\n[김단유] [오후 1:02] 설문 링크 공유해요 https://forms.gle/x\\n[김단유] [오후 1:03] ㅋㅋ\\n[외부 손님] [오후 1:04] 회의실 예약은 제가 할게요', '캡스톤.txt')`);
+  await until(() => A.document.querySelector('#kakaoImportForm'));
+  ok(A.document.querySelectorAll('#kakaoImportForm select[data-speaker]').length === 3, '카카오톡: 참여자 3명 짝짓기 폼');
+  await A.eval(`importKakao(document.querySelector('#kakaoImportForm'))`);
+  await until(async () => (await list(`teams/${T}/calls`)).some(c => c.source === 'kakao' && c.summary));
+  const kc = (await list(`teams/${T}/calls`)).find(c => c.source === 'kakao');
+  ok(kc?.status === 'ended' && kc.lineCount === 3 && kc.title.includes('카카오톡') && kc.id.startsWith('kakao_'), `카카오톡 대화를 끝난 회의로 저장 (ㅋㅋ 제외, ${kc?.lineCount}줄)`);
+  ok(kc?.decisions?.some(d => d.includes('확정하기로')), `"~하기로 했어요"가 정한 것 후보로 (${kc?.decisions})`);
+  await until(() => B.eval(`state.calls.some(c => c.source === 'kakao')`));
+  await B.eval('syncMyTalks()');
+  await until(async () => (await list(`teams/${T}/items`)).some(i => i.type === 'talk' && i.talk?.callId === kc.id && i.memberId === mB));
+  const kt = (await list(`teams/${T}/items`)).find(i => i.type === 'talk' && i.talk?.callId === kc.id && i.memberId === mB);
+  ok(kt?.visibility === 'me' && kt.talk.transcript.includes('forms.gle'), "B의 방에 카톡 '내가 한 말' (본인 확인 전까지 나만 보기)");
+  A.eval(`go('calls')`);
+  await until(() => [...A.document.querySelectorAll('.past-call header b')].some(b => b.textContent.startsWith('💬')));
+  ok(true, '지난 회의 목록에 💬 표시');
   noDenied(A, 'A'); noDenied(B, 'B'); noDenied(C, 'C');
+}
+
+// ---------- 카카오톡 가져오기 (오프라인·샘플 방) ----------
+async function scenarioKakao() {
+  say('\n=== 카카오톡 단톡방 가져오기 (샘플 방)');
+  closeAll();
+  const A = await open('uK');
+  await A.eval('(async () => { guestMode = true; state = sampleWorkspace(); await loadSampleApi(); go("integrations"); })()');
+  await until(() => A.document.querySelector('[data-kakao="sample"]'));
+  ok(A.document.querySelector('#kakaoFile') && A.document.querySelector('[data-kakao="sample"]'), '연동 화면에 카카오톡 카드 (파일 올리기 + 샘플 체험)');
+  A.document.querySelector('[data-kakao="sample"]').click();
+  await until(() => A.document.querySelector('#kakaoImportForm'));
+  const selects = [...A.document.querySelectorAll('#kakaoImportForm select[data-speaker]')];
+  ok(selects.length === 4 && selects.every(s => s.value), `샘플 단톡방: 참여자 4명이 팀원과 자동으로 짝지어짐`);
+  await axeCheck(A, '카카오톡 가져오기 모달');
+  await A.eval(`importKakao(document.querySelector('#kakaoImportForm'))`);
+  await until(() => A.eval(`state.items.filter(i => i.type === 'talk' && i.talk?.callId?.startsWith('kakao_')).length === 4`));
+  const talk = JSON.parse(A.eval(`JSON.stringify(state.items.find(i => i.type === 'talk' && i.talk?.callId?.startsWith('kakao_') && member(i.memberId).name === '지민'))`));
+  ok(talk.content.includes('내가 정한 것으로 보이는 말') && talk.content.includes('확정하기로') && talk.keywords.length >= 3, `지민: 정한 것·키워드 (${talk.keywords})`);
+  ok(A.document.querySelector('.card.integ .vis-prof')?.textContent.includes('가져옴'), '카드에 가져옴 표시');
+  A.eval(`go('workspace')`);
+  await until(() => A.document.querySelector('.feed-card'));
+  ok([...A.document.querySelectorAll('.feed-card')].some(c => c.textContent.includes('카카오톡')), '워크스페이스 피드에 카톡 기록이 보임');
+  closeFrame('uK');
 }
 
 // ---------- 시나리오 3: 방 관리 ----------
@@ -1157,11 +1199,157 @@ async function scenarioXss() {
   frameTest.remove();
 }
 
+// 디자인 토대: 콘스텔레이션 다크 테마 토큰이 전역에 깔렸는지 + 공통 셸 접근성
+async function scenarioDesign() {
+  say('\n=== 디자인 토대: 콘스텔레이션');
+  closeAll();
+  const A = await open('uA');
+  const bg = await A.eval('getComputedStyle(document.body).backgroundColor');
+  ok(bg === 'rgb(236, 227, 211)', `페이지 배경이 모래색이어야 함 (--bg #ece3d3) → ${bg}`);
+  const font = await A.eval('getComputedStyle(document.body).fontFamily.toLowerCase()');
+  ok(font.includes('pretendard'), `본문 글꼴 Pretendard 우선 → ${font.slice(0, 60)}`);
+  await axeCheck(A, '시작 셸(콘스텔레이션)');
+  closeFrame('uA');
+}
+
+// 시작/로그인 화면: 콘스텔레이션 히어로 + COLLECT/CONNECT/CREATE
+async function scenarioLanding() {
+  say('\n=== 시작화면: 모래알이 확대하면 단어가 되고, 결국 하나의 공으로 모인다');
+  closeAll();
+  const A = await open('uA');
+  await A.eval('renderLogin()');
+  const txt = await A.eval('document.getElementById("app").textContent');
+  ok(txt.includes('흩어진 생각이') && txt.includes('하나의 방향이 되도록'), '오프닝 헤드라인');
+  ok(txt.includes('01 / THE IDEA') && txt.includes('02 / HOW IT WORKS'), 'THE IDEA · HOW IT WORKS 섹션');
+  ok(['COLLECT', 'CONNECT', 'CREATE'].every(w => txt.includes(w)), 'COLLECT · CONNECT · CREATE 세 단계');
+  ok(await A.eval('!!document.querySelector("canvas.lp-canvas")'), '모래알을 그리는 캔버스');
+  const st = () => A.eval('landingStats()');
+  const s0 = await until(async () => await st()); // 모래는 렌더 다음 프레임에 깔린다
+  ok(s0 && s0.count >= 700, `모래알이 수백 개 이상 (${s0 && s0.count})`);
+  ok(s0 && s0.zoom === 1 && s0.wordsVisible === 0, '처음에는 확대 없이 알갱이로만 보임');
+  ok(await A.eval('!!document.querySelector(".lp-whole")'), '하나로 모이는 큰 원');
+  ok(await A.eval("!!document.getElementById('googleLogin')") && await A.eval("/샘플 팀으로 체험하기/.test(document.getElementById('guestSampleBtn')?.textContent || '')"), '로그인·샘플 체험 버튼 유지');
+  const rm = await A.eval(`[...document.styleSheets].some(s => { try { return [...s.cssRules].some(r => r.type === 4 && /prefers-reduced-motion/.test(r.conditionText || (r.media && r.media.mediaText) || '') && /lp-canvas/.test(r.cssText)); } catch (e) { return false; } })`);
+  ok(rm, 'prefers-reduced-motion에서 연출 정지 규칙');
+  const v = name => A.eval(`parseFloat(document.getElementById('lpStage').style.getPropertyValue('${name}') || 0)`);
+  ok((await v('--whole-opacity')) === 0, '처음에는 큰 원이 보이지 않음');
+  // 커서: 알갱이가 커서에 밀려 흩어진다
+  A.scrollTo(0, 0);
+  const W = A.innerWidth, H = A.innerHeight;
+  for (let i = 0; i < 12; i++) {
+    A.dispatchEvent(new A.PointerEvent('pointermove', { clientX: W * 0.5 + i * 14, clientY: H * 0.58, bubbles: true, pointerType: 'mouse' }));
+    await sleep(40);
+  }
+  ok(await until(async () => (await st()).displaced > 5), '커서를 움직이면 모래알이 밀려남');
+  // 스크롤 = 확대: 확대할수록 알갱이가 단어로 보인다
+  const total = await A.eval('document.querySelector(".lp-experience").offsetHeight - document.getElementById("lpStage").offsetHeight');
+  A.scrollTo(0, Math.round(total * 0.30));
+  ok(await until(async () => { const s = await st(); return s.zoom > 3 && s.wordsVisible >= 3; }), '확대하면 알갱이가 단어로 바뀜');
+  // 충분히 지나면 전부 하나의 공으로 모인다
+  A.scrollTo(0, Math.round(total * 0.75));
+  ok(await until(async () => (await st()).converge > 0.9 && (await v('--whole-opacity')) > 0.9), '모든 알갱이가 하나의 공으로 모임');
+  A.scrollTo(0, Math.round(total * 0.2));
+  ok(await until(async () => (await v('--progress')) > 0.1 && (await v('--progress')) < 0.3), '스크롤 위치에 따라 진행도가 바뀜');
+  A.document.getElementById('lpStart').scrollIntoView();
+  ok(await until(() => A.eval('(() => { const r = document.getElementById("googleLogin").getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()')), '끝까지 내리면 시작하기 버튼이 보임');
+  A.scrollTo(0, 0);
+  await axeCheck(A, '시작화면(모래 연출)');
+  closeFrame('uA');
+}
+
+// 코크핏: 데모 샘플 + 작업 기록을 한 피드로, 검색·소스필터·상세 패널
+async function scenarioCockpit() {
+  say('\n=== 코크핏 피드');
+  closeAll();
+  const A = await open('uA');
+  await A.eval('(async () => { guestMode = true; state = sampleWorkspace(); await loadSampleApi(); renderWorkspace(); })()');
+  const n0 = await A.eval('document.querySelectorAll(".feed-card").length');
+  ok(n0 >= 1, `피드 카드 렌더 (${n0})`);
+  await A.eval('{ const s = document.querySelector(".feed-search input"); s.value = "다회용기"; s.dispatchEvent(new Event("input", { bubbles: true })); }');
+  const n1 = await A.eval('document.querySelectorAll(".feed-card").length');
+  ok(n1 >= 1 && n1 < n0, `검색어 입력 시 목록 축소 (${n0}→${n1})`);
+  await A.eval('{ const s = document.querySelector(".feed-search input"); s.value = ""; s.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector(".feed-filters [data-src=\\"github\\"]").click(); }');
+  const gh = await A.eval('[...document.querySelectorAll(".feed-card")].length');
+  ok(gh >= 1, `소스 필터칩(github) 동작 (${gh})`);
+  await A.eval('document.querySelector(".feed-card").click();');
+  ok(await A.eval('document.getElementById("panel").classList.contains("open")'), '카드 클릭 시 상세 패널 열림');
+  await A.eval('document.querySelector("#panel [data-close-panel]").click();');
+  await axeCheck(A, '코크핏 피드');
+  closeFrame('uA');
+}
+
+// 코크핏 레일: 마일스톤·산출물(빠른추가·상태토글) + 팀원 기여도
+async function scenarioRail() {
+  say('\n=== 코크핏 레일: 마일스톤·산출물·기여도');
+  closeAll();
+  const A = await open('uA');
+  await A.eval('(async () => { guestMode = true; state = sampleWorkspace(); await loadSampleApi(); renderWorkspace(); })()');
+  ok(await A.eval('document.querySelectorAll(".rail [data-ms]").length >= 1'), '레일에 시드된 마일스톤 표시');
+  const d0 = await A.eval('document.querySelectorAll(".rail [data-dl]").length');
+  ok(d0 >= 1, `레일에 시드된 산출물 표시 (${d0})`);
+  await A.eval('document.querySelector(".rail [data-rail-add=\\"deliverable\\"]").click();');
+  const d1 = await A.eval('document.querySelectorAll(".rail [data-dl]").length');
+  ok(d1 === d0 + 1, `산출물 추가로 1개 증가 (${d0}→${d1})`);
+  const before = await A.eval('document.querySelector(".rail [data-dl-status]").textContent.trim()');
+  await A.eval('document.querySelector(".rail [data-dl-status]").click();');
+  const after = await A.eval('document.querySelector(".rail [data-dl-status]").textContent.trim()');
+  ok(before !== after, `산출물 상태 토글 반영 (${before}→${after})`);
+  ok(await A.eval('document.querySelectorAll(".rail .contrib .contrib-row").length >= 1 && /조각/.test(document.querySelector(".rail .contrib").textContent)'), '기여도 패널에 팀원별 수치');
+  await axeCheck(A, '코크핏 레일');
+  closeFrame('uA');
+}
+
+// 내비게이션: 코크핏 기본 화면 + 공간(베타) 분리
+async function scenarioNav() {
+  say('\n=== 내비게이션: 코크핏 기본 + 공간(베타)');
+  closeAll();
+  const A = await open('uA');
+  // 데모(게스트)는 미로그인 상태 — 로그인 사용자를 비워 게스트 샘플 진입을 재현
+  await A.eval('{ authUser = null; guestMode = true; cloud.showSetup = false; state = sampleWorkspace(); render(); }');
+  ok(await A.eval('state.view === "workspace" && !!document.querySelector(".feed")'), '데모 기본 화면이 코크핏(피드)');
+  ok(await A.eval('!!document.querySelector("#nav [data-go=\\"workspace\\"]")'), '내비에 워크스페이스 탭');
+  ok(await A.eval('[...document.querySelectorAll("#nav button")].some(b => /공간/.test(b.textContent))'), '내비에 공간(베타)');
+  await A.eval('[...document.querySelectorAll("#nav button")].find(b => /공간/.test(b.textContent)).click();');
+  ok(await A.eval('!!document.querySelector(".hall .iso") || !!document.querySelector(".iso")'), '공간(베타) 클릭 시 iso 씬 렌더');
+  await A.eval('document.querySelector("#nav [data-go=\\"workspace\\"]").click();');
+  ok(await A.eval('state.view === "workspace" && !!document.querySelector(".feed")'), '워크스페이스로 복귀');
+  await axeCheck(A, '코크핏 기본 내비');
+  closeFrame('uA');
+}
+
+// 온라인 팀에서 마일스톤·산출물이 Firestore로 동기화되고 다른 팀원에게 보이는가
+async function scenarioCockpitSync() {
+  say('\n=== 코크핏 온라인 동기화: 마일스톤·산출물');
+  closeAll();
+  await wipe();
+  const A = await open('uA'), B = await open('uB');
+  const T = await makeRoom(A, '코크핏조');
+  await A.eval("addDeliverable({ title: 'SSRD 초안', docType: 'SSRD' }); addMilestone({ title: '정의 단계', kind: 'phase' });");
+  const dls = await until(async () => { const l = await list(`teams/${T}/deliverables`); return l.some(d => d.title === 'SSRD 초안') ? l : false; });
+  ok(!!dls, '산출물이 Firestore에 동기화됨');
+  const mss = await until(async () => { const l = await list(`teams/${T}/milestones`); return l.some(m => m.title === '정의 단계') ? l : false; });
+  ok(!!mss, '마일스톤이 Firestore에 동기화됨');
+  const link = await invite(A, 'student');
+  await joinAs(B, link, '김단유');
+  const got = await until(() => B.eval("(state.deliverables || []).some(d => d.title === 'SSRD 초안')"));
+  ok(got, '다른 팀원 B가 산출물을 받음');
+  noDenied(A, 'A');
+  closeAll();
+}
+
 async function run() {
+  if (ONLY === 'cockpitsync') { await scenarioCockpitSync(); closeAll(); return; }
   if (ONLY === 'ui') { await scenarioUi(); closeAll(); return; }
   if (ONLY === 'xss') { await scenarioXss(); closeAll(); return; }
   if (ONLY === 'consent') { await scenarioConsent(); await scenarioDelete(); closeAll(); return; }
   if (ONLY === 'stress') { await scenarioStress(); closeAll(); return; }
+  if (ONLY === 'design') { await scenarioDesign(); closeAll(); return; }
+  if (ONLY === 'landing') { await scenarioLanding(); closeAll(); return; }
+  if (ONLY === 'cockpit') { await scenarioCockpit(); closeAll(); return; }
+  if (ONLY === 'rail') { await scenarioRail(); closeAll(); return; }
+  if (ONLY === 'nav') { await scenarioNav(); closeAll(); return; }
+  if (ONLY === 'kakao') { await scenarioKakao(); closeAll(); return; }
+  if (!ONLY) { await scenarioDesign(); await scenarioLanding(); await scenarioCockpit(); await scenarioRail(); await scenarioNav(); await scenarioKakao(); await scenarioCockpitSync(); await scenarioUi(); }
   if (!ONLY || ONLY === 'room') {
     const ctx = await scenarioRoom();
     await scenarioCalls(ctx);

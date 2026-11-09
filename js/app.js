@@ -75,7 +75,7 @@ function timeAgo(ts) {
   return `${Math.floor(min / 1440)}일 전`;
 }
 
-const STUDENT_VIEWS = ['meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations'];
+const STUDENT_VIEWS = ['workspace', 'meeting', 'room', 'office', 'timeline', 'decisions', 'report', 'calls', 'integrations'];
 
 function go(view, roomId = null) {
   if (isProfView() && STUDENT_VIEWS.includes(view)) {
@@ -232,23 +232,21 @@ const GOOGLE_LOGO = `<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden
 function renderLogin() {
   $('#topbar').hidden = true;
   const fileMode = location.protocol === 'file:';
-  app.innerHTML = `
-  <section class="setup">
-    <div class="setup-card">
-      <div class="logo">🧠</div>
-      <h1>BrainRoom</h1>
-      <p class="lead">각자 찾아본 자료가 <b>방 인테리어</b>가 되는 팀 브레인스토밍 오피스</p>
-      ${new URLSearchParams(location.search).get('guardian') ? '<p class="notice">👪 자녀의 이용 동의 요청이에요. <b>보호자 본인의</b> Google 계정으로 로그인해 주세요.</p>' : ''}
-      ${new URLSearchParams(location.search).get('team') ? '<p class="notice">🔑 방 초대 링크로 들어왔어요. 로그인하면 바로 그 방에 참여해요.</p>' : ''}
-      <button class="btn google-btn" id="googleLogin" ${fileMode ? 'disabled' : ''}>${GOOGLE_LOGO}<span>Google 계정으로 로그인</span></button>
+  const params = new URLSearchParams(location.search);
+  // 시작화면의 스크롤 연출·마크업은 js/landing.js. 여기서는 로그인에 필요한 버튼과 안내만 넘긴다
+  const cta = `
+      ${params.get('guardian') ? '<p class="notice">👪 자녀의 이용 동의 요청이에요. <b>보호자 본인의</b> Google 계정으로 로그인해 주세요.</p>' : ''}
+      ${params.get('team') ? '<p class="notice">🔑 방 초대 링크로 들어왔어요. 로그인하면 바로 그 방에 참여해요.</p>' : ''}
+      <div class="lp-cta">
+        <button class="lp-button dark" id="googleLogin" ${fileMode ? 'disabled' : ''}>${GOOGLE_LOGO}<span>Google 계정으로 시작하기</span> <span aria-hidden="true">↗</span></button>
+        <button class="lp-button" id="guestSampleBtn">샘플 팀으로 체험하기 <span aria-hidden="true">↗</span></button>
+      </div>
       ${fileMode
-        ? '<p class="notice">⚠️ 파일을 직접 열면 Google 로그인이 동작하지 않아요.<br>로컬 서버(<code>python -m http.server 5173</code>)로 실행해 주세요.</p>'
-        : '<p class="muted sm">무료 서비스예요. 로그인한 뒤 나이 확인과 동의 화면이 나와요.</p>'}
-      <div class="or">또는</div>
-      <button class="btn" id="guestSampleBtn">🎲 로그인 없이 샘플 팀으로 체험하기</button>
-      <p class="muted sm">샘플의 사람과 내용은 모두 지어낸 것이고, 아무 데도 저장되지 않아요.</p>
-    </div>
-  </section>`;
+        ? '<p class="notice">⚠️ 파일을 직접 열면 Google 로그인이 동작하지 않아요.<br>로컬 서버(<code>python -m http.server 5178</code>)로 실행해 주세요.</p>'
+        : '<p class="lp-fine">무료 서비스예요. 로그인하면 나이 확인·동의 화면이 나와요. 샘플의 사람·내용은 지어낸 것이고 저장되지 않아요.</p>'}`;
+  app.classList.add('landing');
+  app.innerHTML = landingHTML(cta);
+  requestAnimationFrame(initLanding);
 }
 
 // 로그인한 계정이 이 워크스페이스의 어느 팀원인지 고르는 화면
@@ -289,6 +287,7 @@ function renderOffice() {
   <section class="office">
     <div class="page-head">
       <div>
+        <p class="eyebrow">OFFICE · 우리 팀의 공간</p>
         <h1>${esc(state.teamName)}의 오피스</h1>
         <p class="muted">팀원 ${state.members.length}명 · 모인 자료 ${state.items.length}개 · 회의 테이블 위 ${table.length}개</p>
       </div>
@@ -431,7 +430,8 @@ function renderMeeting() {
   <section class="meeting-view">
     <div class="page-head">
       <div>
-        <h1>🗂️ ${esc(state.teamName)} 회의실</h1>
+        <p class="eyebrow">MEETING ROOM · 함께 모이는 곳</p>
+        <h1>${esc(state.teamName)} 회의실</h1>
         <p class="muted">벽의 문이나 팀원 캐릭터를 누르면 그 팀원의 방으로 들어가요. 테이블을 누르면 아래 보드로 이동해요.</p>
       </div>
       <button class="btn primary" id="exportBtn">📝 초안 문서 만들기</button>
@@ -509,6 +509,7 @@ function renderMeeting() {
   </section>`;
 
   requestAnimationFrame(drawLinks);
+  if (typeof initHallPlayer === 'function') requestAnimationFrame(initHallPlayer);
 }
 
 function drawLinks() {
@@ -700,7 +701,7 @@ function importWorkspace(file) {
         const ids = new Set(data.items.map(i => i.id));
         data.items.push(...state.items.filter(i => i.visibility === 'me' && !ids.has(i.id)));
       }
-      state = { ...data, view: 'meeting', roomId: null, viewer: 'student', meId: sameTeam ? state.meId : data.meId };
+      state = { ...data, view: 'workspace', roomId: null, viewer: 'student', meId: sameTeam ? state.meId : data.meId };
       if (!member(state.meId)) state.meId = state.members[0]?.id;
       saveState();
       closeModal();
@@ -766,6 +767,7 @@ document.addEventListener('keydown', e => {
 });
 
 function render() {
+  app.classList.remove('landing');
   if (!authReady) {
     app.innerHTML = '<div class="loading">불러오는 중…</div>';
     return;
@@ -785,6 +787,7 @@ function render() {
   }
   renderTopbar();
   if (isProfView()) renderProfessor();
+  else if (state.view === 'workspace') renderWorkspace();
   else if (state.view === 'room') renderRoom(state.roomId || state.meId);
   else if (state.view === 'office') renderOffice();
   else if (state.view === 'timeline') renderTimeline();
@@ -825,7 +828,7 @@ document.addEventListener('click', async e => {
       if (!won) return render();
       claimMember(id, authUser);
       toast(`${member(id).name}님의 방에 연결됐어요`);
-      go('meeting');
+      go('workspace');
     });
   }
 
