@@ -31,9 +31,9 @@ GITHUB_CLIENT_ID = ""
 
 # 사용량·예산 기록 (없으면 인스턴스 메모리에만 기록돼 상한이 정확하지 않다)
 # npx wrangler kv namespace create USAGE  → 나온 id를 아래에
-# [[kv_namespaces]]
-# binding = "USAGE"
-# id = "여기에 id"
+[[kv_namespaces]]
+binding = "USAGE"
+id = "16e87153c3df48ea88a738ec1883e1ab"
 
 # 비밀 값 (npx wrangler secret put 이름):
 #   ANTHROPIC_API_KEY        LLM 요약·그림 키워드

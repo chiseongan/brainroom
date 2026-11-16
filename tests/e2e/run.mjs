@@ -21,7 +21,8 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/app.html') {
     body = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
       .replace(/<script src="js\/firebase-config\.js[^"]*"><\/script>/, m => `<script src="/e2e/shim.js"></script>\n  ${m}`);
-    if (url.searchParams.get('proxy')) body = body.replace(/<script src="js\/ai-config\.js[^"]*"><\/script>/, '<script src="/e2e/proxy-config.js"></script>');
+    // 프록시 주소는 시험이 정한다: 켜는 시험은 가짜 프록시, 아니면 비워서 실제 배포된 프록시를 부르지 않게 한다
+    body = body.replace(/<script src="js\/ai-config\.js[^"]*"><\/script>/, `<script src="/e2e/proxy-config.js${url.searchParams.get('proxy') ? '' : '?off=1'}"></script>`);
     // 앱의 CSP는 그대로 두고 시험용 주소만 더한다 (실제 정책 아래에서 앱이 도는지 확인)
     body = body.replace(/connect-src /, 'connect-src http://127.0.0.1:* ws://127.0.0.1:* ');
     // 시험 장치가 앱 안의 함수를 부르는 데 eval을 쓴다. 인라인 스크립트·이벤트는 그대로 막힌다
@@ -35,7 +36,7 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/e2e/proxy-config.js') {
     res.writeHead(200, { 'Content-Type': TYPES['.js'], 'Cache-Control': 'no-store' });
-    return res.end(`const PROXY_URL = '${PROXY}';`);
+    return res.end(`const PROXY_URL = '${url.searchParams.get('off') ? '' : PROXY}';`);
   }
   if (url.pathname === '/js/firebase-config.js') {
     body = fs.readFileSync(path.join(ROOT, 'js/firebase-config.js'), 'utf8').replaceAll('brainroom-777b0', 'demo-brainroom');
