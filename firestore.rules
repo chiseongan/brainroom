@@ -66,6 +66,32 @@ service cloud.firestore {
         && (d.get('table', null) == null || (number(d.table.x) && number(d.table.y)));
     }
 
+    // 프로젝트 코크핏: 마일스톤·산출물 내용 검사 (허용한 칸과 값만, 길이 제한, http(s) 주소만)
+    function idOrNull(v) { return v == null || safeId(v); }
+    function timeOrNull(v) { return v == null || (number(v) && v > 0 && v < 4102444800000); }
+    function validMilestone(d) {
+      return d.keys().hasOnly(['id', 'title', 'phase', 'dueAt', 'status', 'kind', 'createdAt', 'createdBy'])
+        && d.title is string && d.title.size() >= 1 && d.title.size() <= 500
+        && str(d.get('phase', ''), 60)
+        && d.get('status', 'todo') in ['todo', 'doing', 'done']
+        && d.get('kind', 'custom') in ['phase', 'present', 'custom']
+        && timeOrNull(d.get('dueAt', null))
+        && number(d.createdAt) && d.createdAt <= request.time.toMillis() + 86400000
+        && idOrNull(d.get('createdBy', null));
+    }
+    function validDeliverable(d) {
+      return d.keys().hasOnly(['id', 'title', 'docType', 'status', 'ownerId', 'url', 'dueAt', 'milestoneId', 'createdAt'])
+        && d.title is string && d.title.size() >= 1 && d.title.size() <= 500
+        && d.get('docType', 'custom') in ['SSRD', 'SSAD', 'test', 'present', 'custom']
+        && d.get('status', 'draft') in ['draft', 'review', 'submitted']
+        && idOrNull(d.get('ownerId', null))
+        && idOrNull(d.get('milestoneId', null))
+        && str(d.get('url', ''), 2000)
+        && (d.get('url', '') == '' || d.url.matches('^[hH][tT][tT][pP][sS]?://.*'))
+        && timeOrNull(d.get('dueAt', null))
+        && number(d.createdAt) && d.createdAt <= request.time.toMillis() + 86400000;
+    }
+
     // 새 기록: 본인이 작성자이고 명단에서 고른 자기 팀원 id로만 쓸 수 있다.
     // 예외: 기여 보정 요청을 다른 팀원이 확인해 '빠진 기여'를 추가할 때 (RQ-14)
     // 다른 팀원이 내 기록의 분류를 바꾸려면 그 기록에 대한 보정 요청을 확인하는 경우여야 한다 (RQ-14)
@@ -262,6 +288,19 @@ service cloud.firestore {
       match /quests/{id} {
         allow read: if isMember(t);
         allow create, update: if isMember(t) && str(request.resource.data.get('title', ''), 500);
+        allow delete: if isMember(t) || tearingDown(t);
+      }
+
+      // 프로젝트 코크핏: 마일스톤·산출물 (팀원이 관리, 교수자도 진행 상황을 본다)
+      match /milestones/{id} {
+        allow read: if isMember(t) || isProf(t);
+        allow create, update: if isMember(t) && safeId(id) && validMilestone(request.resource.data);
+        allow delete: if isMember(t) || tearingDown(t);
+      }
+
+      match /deliverables/{id} {
+        allow read: if isMember(t) || isProf(t);
+        allow create, update: if isMember(t) && safeId(id) && validDeliverable(request.resource.data);
         allow delete: if isMember(t) || tearingDown(t);
       }
 

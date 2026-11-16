@@ -77,7 +77,8 @@ function renderTimeline() {
   <section>
     <div class="page-head">
       <div>
-        <h1>🕒 활동 타임라인</h1>
+        <p class="eyebrow">TIMELINE · 시간순으로</p>
+        <h1>활동 타임라인</h1>
         <p class="muted">팀원이 담은 기록과 확정된 결정을 시간순으로 모았어요.</p>
       </div>
       <div class="filters">
@@ -130,7 +131,8 @@ function renderDecisions() {
   <section>
     <div class="page-head">
       <div>
-        <h1>✅ 결정 기록</h1>
+        <p class="eyebrow">DECISIONS · 정한 것들</p>
+        <h1>결정 기록</h1>
         <p class="muted">메모·아이디어·AI 대화에서 "정한 것" 같은 문장을 찾아 후보로 보여줘요. 확정한 결정만 리포트와 초안 문서에 들어가요.</p>
       </div>
     </div>
@@ -267,7 +269,8 @@ function renderReport() {
   <section>
     <div class="page-head">
       <div>
-        <h1>📊 기여 리포트</h1>
+        <p class="eyebrow">REPORT · 남긴 기록</p>
+        <h1>기여 리포트</h1>
         <p class="muted">점수를 매기지 않아요. 팀원별로 남긴 기록의 종류와 근거 링크만 보여줘요. 최종 평가는 교수자가 해요.</p>
       </div>
       <button class="btn" data-tr="corr-open">✏️ 기여 보정 요청</button>
@@ -470,7 +473,8 @@ function renderProfessor() {
   <section>
     <div class="page-head">
       <div>
-        <h1>🎓 교수자 보기 · 팀별 현황</h1>
+        <p class="eyebrow">PROFESSOR · 교수자 보기</p>
+        <h1>팀별 현황</h1>
         <p class="muted">학생이 '교수자까지'로 고른 기록만 내용을 볼 수 있어요. 나머지는 횟수와 AI 사용 목적만 보여요. 점수는 표시하지 않아요.</p>
       </div>
       <div class="filters">

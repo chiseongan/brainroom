@@ -232,6 +232,107 @@ function floorLamp(x, y, lit) {
   </g>`;
 }
 
+// 바닥 러그: 테두리 + 안쪽 면 + 가는 장식선. 바닥 바로 위(z≈0.4)에 깐다.
+function rug(x, y, w, d, color, border) {
+  const b = border || shade(color, -0.22);
+  return `<g>
+    ${poly([[x, y, 0.4], [x + w, y, 0.4], [x + w, y + d, 0.4], [x, y + d, 0.4]], b, OUTLINE)}
+    ${poly([[x + 0.28, y + 0.28, 0.42], [x + w - 0.28, y + 0.28, 0.42], [x + w - 0.28, y + d - 0.28, 0.42], [x + 0.28, y + d - 0.28, 0.42]], color)}
+    ${poly([[x + 0.6, y + 0.6, 0.44], [x + w - 0.6, y + 0.6, 0.44], [x + w - 0.6, y + d - 0.6, 0.44], [x + 0.6, y + d - 0.6, 0.44]], 'none', `stroke="${shade(color, 0.18)}" stroke-width="1" fill="none" opacity=".55"`)}
+  </g>`;
+}
+
+// 천장 조명 빛무리: 바닥·테이블 위로 은은하게 떨어지는 원형 빛 (바닥보다 먼저 그려 물건이 위로 올라오게)
+function ceilingGlow(x, y, r = 2.4, opacity = 0.5) {
+  const [cx, cy] = iso(x, y, 0);
+  return `<ellipse cx="${cx}" cy="${cy}" rx="${r * TW / 2}" ry="${r * TH / 2}" fill="url(#brGlow)" opacity="${opacity}"/>`;
+}
+
+// 사무용 바퀴 의자: 5발 받침 + 기둥 + 좌석 + 등받이. face는 등받이가 붙는 바깥쪽('back'|'front'|'left'|'right').
+function officeChair(x, y, face, color = '#3b4150') {
+  const seatH = 16, sw = 0.82, sd = 0.82;
+  const sx = x - sw / 2, sy = y - sd / 2;
+  const [cx, cy] = iso(x, y, 0);
+  const far = face === 'back' || face === 'left';
+  const backrest =
+    face === 'back' ? box(sx, sy, seatH, sw, 0.2, 25, color, { top: shade(color, 0.12) }) :
+    face === 'front' ? box(sx, sy + sd - 0.2, seatH, sw, 0.2, 25, color, { top: shade(color, 0.12) }) :
+    face === 'left' ? box(sx, sy, seatH, 0.2, sd, 25, color, { top: shade(color, 0.12) }) :
+      box(sx + sw - 0.2, sy, seatH, 0.2, sd, 25, color, { top: shade(color, 0.12) });
+  const seat = box(sx, sy, seatH - 5, sw, sd, 6, shade(color, 0.05), { top: shade(color, 0.18) });
+  return `<g>
+    ${shadow(x, y, 0.58, 0.58, 0.22)}
+    <g stroke="#2a2e36" stroke-width="2.6" stroke-linecap="round">
+      <line x1="${cx - 10}" y1="${cy + 1}" x2="${cx + 10}" y2="${cy + 1}"/>
+      <line x1="${cx}" y1="${cy - 5}" x2="${cx}" y2="${cy + 7}"/>
+      <line x1="${cx - 7}" y1="${cy - 3}" x2="${cx + 7}" y2="${cy + 5}"/>
+      <line x1="${cx + 7}" y1="${cy - 3}" x2="${cx - 7}" y2="${cy + 5}"/>
+    </g>
+    ${cyl(x, y, 0, 3, seatH - 5, '#30353f', { top: '#474e5b' })}
+    ${far ? backrest + seat : seat + backrest}
+  </g>`;
+}
+
+// 뒷벽에 걸린 벽시계
+function wallClockY(x, z, r = 7.5) {
+  const [cx, cy] = iso(x, 0, z);
+  return `<g transform="matrix(1,0.5,0,1,${cx.toFixed(1)},${cy.toFixed(1)})">
+    <circle r="${r + 1.8}" fill="#2b2f3a"/><circle r="${r}" fill="#f8f6f0" stroke="#cdc7b8" stroke-width="1"/>
+    <line x1="0" y1="0" x2="0.5" y2="${-r * 0.56}" stroke="#2b2f3a" stroke-width="1.4" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="${r * 0.62}" y2="${r * 0.18}" stroke="#454b57" stroke-width="1.1" stroke-linecap="round"/>
+    <circle r="1" fill="#e0564f"/>
+  </g>`;
+}
+
+// 뒷벽에 걸린 와이드 모니터 (회의 화면). 작은 막대그래프 한 조각으로 "대시보드" 느낌.
+function wallMonitorY(xC, z, w = 4, h = 20) {
+  const x0 = xC - w / 2, x1 = xC + w / 2;
+  const [bx, by] = iso(x0 + 0.35, 0, z + h - 4);
+  const bars = [6, 11, 8, 14, 10].map((bh, i) =>
+    `<rect transform="matrix(1,0.5,0,1,${(bx + i * 7).toFixed(1)},${by.toFixed(1)})" x="0" y="${-bh}" width="4.4" height="${bh}" rx="1" fill="${['#8fd0ff', '#ffd27a', '#b7e39a', '#f4a6c0', '#c7b3ff'][i]}"/>`).join('');
+  return `<g>
+    ${wallRectY(x0 - 0.1, x1 + 0.1, z - 1, z + h + 1, '#1c2029', OUTLINE)}
+    ${wallRectY(x0, x1, z, z + h, '#0e1116')}
+    ${wallRectY(x0 + 0.12, x1 - 0.12, z + 1.5, z + h - 1.5, '#12202c')}
+    ${bars}
+  </g>`;
+}
+
+// 왼쪽 벽 벽시계
+function wallClockX(y, z, r = 7.5) {
+  const [cx, cy] = iso(0, y, z);
+  return `<g transform="matrix(1,-0.5,0,1,${cx.toFixed(1)},${cy.toFixed(1)})">
+    <circle r="${r + 1.8}" fill="#2b2f3a"/><circle r="${r}" fill="#f8f6f0" stroke="#cdc7b8" stroke-width="1"/>
+    <line x1="0" y1="0" x2="-0.5" y2="${-r * 0.56}" stroke="#2b2f3a" stroke-width="1.4" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="${-r * 0.62}" y2="${r * 0.18}" stroke="#454b57" stroke-width="1.1" stroke-linecap="round"/>
+    <circle r="1" fill="#e0564f"/>
+  </g>`;
+}
+
+// 왼쪽 벽 와이드 모니터 (회의 화면)
+function wallMonitorX(yC, z, w = 4, h = 20) {
+  const y0 = yC - w / 2, y1 = yC + w / 2;
+  const [bx, by] = iso(0, y1 - 0.35, z + h - 4);
+  const bars = [6, 11, 8, 14, 10].map((bh, i) =>
+    `<rect transform="matrix(1,-0.5,0,1,${(bx + i * 7).toFixed(1)},${by.toFixed(1)})" x="0" y="${-bh}" width="4.4" height="${bh}" rx="1" fill="${['#8fd0ff', '#ffd27a', '#b7e39a', '#f4a6c0', '#c7b3ff'][i]}"/>`).join('');
+  return `<g>
+    ${wallRectX(y0 - 0.1, y1 + 0.1, z - 1, z + h + 1, '#1c2029', OUTLINE)}
+    ${wallRectX(y0, y1, z, z + h, '#0e1116')}
+    ${wallRectX(y0 + 0.12, y1 - 0.12, z + 1.5, z + h - 1.5, '#12202c')}
+    ${bars}
+  </g>`;
+}
+
+// 뒷벽 액자
+function wallArtY(x0, x1, z0, z1, color) {
+  return `<g>
+    ${wallRectY(x0 - 0.08, x1 + 0.08, z0 - 1, z1 + 1, '#6d5942', OUTLINE)}
+    ${wallRectY(x0, x1, z0, z1, '#faf7f0')}
+    ${wallRectY(x0 + 0.14, x1 - 0.14, z0 + 2, z0 + (z1 - z0) * 0.6, color, 'opacity=".7"')}
+    ${wallRectY(x0 + 0.14, x1 - 0.14, z0 + (z1 - z0) * 0.62, z1 - 2, shade(color, 0.3), 'opacity=".6"')}
+  </g>`;
+}
+
 // 주제 소품: 받침대 위에 이모지
 function emojiProp(x, y, emoji, size, { attrs = '', title = '' } = {}) {
   const [cx, cy] = iso(x, y, 10);
@@ -339,12 +440,12 @@ function avatar(x, y, m, { bubble = '', tag = true, attrs = '' } = {}) {
 
   return `<g class="avatar" ${attrs}>
     <ellipse cx="${cx}" cy="${cy}" rx="15" ry="7.5" fill="url(#brShadow)" opacity=".6"/>
-    ${leg(cx - 7.2, 23.5)}${leg(cx + 1.6, 24.5)}
-    ${shoe(cx - 4.6, cy - 1.5)}${shoe(cx + 4.6, cy - 0.5)}
-    ${arm(cx + 9, cx + 11.5)}
+    <g class="leg leg-l">${leg(cx - 7.2, 23.5)}${shoe(cx - 4.6, cy - 1.5)}</g>
+    <g class="leg leg-r">${leg(cx + 1.6, 24.5)}${shoe(cx + 4.6, cy - 0.5)}</g>
+    <g class="arm arm-r">${arm(cx + 9, cx + 11.5)}</g>
     <path d="${torso}" fill="${shirt}" ${OUTLINE}/><path d="${torso}" fill="url(#brCyl)"/>
     <path d="M${cx - 3.2},${cy - 43.2} Q${cx - 0.6},${cy - 39.5} ${cx + 2.2},${cy - 43.4}" fill="${skin}" stroke="#1b1b2a" stroke-opacity=".2" stroke-width=".6"/>
-    ${arm(cx - 9, cx - 11.5)}
+    <g class="arm arm-l">${arm(cx - 9, cx - 11.5)}</g>
     ${backHair}
     <rect x="${cx - 3}" y="${cy - 47}" width="5.4" height="5" fill="${shade(skin, -0.1)}"/>
     <ellipse cx="${cx - 8.8}" cy="${headY + 1}" rx="1.7" ry="2.2" fill="${skin}"/><ellipse cx="${cx + 8.8}" cy="${headY + 1}" rx="1.7" ry="2.2" fill="${skin}"/>

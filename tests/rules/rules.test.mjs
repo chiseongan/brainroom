@@ -143,6 +143,34 @@ await allow('범위 쿼리(내 것)', getDocs(query(collection(ben(), `teams/${T
 await deny('교수자는 기록을 쓸 수 없다', setDoc(p(prof(), '/items/x'), record('x', 'mA', 'uProf', 'prof')));
 await deny('교수자는 결정을 쓸 수 없다', setDoc(p(prof(), '/decisions/x'), { id: 'x', text: 'x' }));
 
+// ---------- 마일스톤 · 산출물 (프로젝트 코크핏) ----------
+const ms = (id, extra = {}) => ({ id, title: '정의하기', phase: '정의', dueAt: 1900000000000, status: 'doing', kind: 'phase', createdAt: 1, createdBy: 'mA', ...extra });
+const dl = (id, extra = {}) => ({ id, title: 'SSRD', docType: 'SSRD', status: 'draft', ownerId: 'mA', url: 'https://docs.google.com/document/d/x', dueAt: null, milestoneId: null, createdAt: 1, ...extra });
+await allow('팀원은 마일스톤을 쓴다', setDoc(p(ben(), '/milestones/m1'), ms('m1')));
+await allow('팀원은 산출물을 쓴다', setDoc(p(ben(), '/deliverables/d1'), dl('d1')));
+await allow('주소 없는 산출물', setDoc(p(ben(), '/deliverables/d2'), dl('d2', { url: '' })));
+await allow('교수자는 마일스톤을 읽는다', getDoc(p(prof(), '/milestones/m1')));
+await deny('교수자는 마일스톤을 쓸 수 없다', setDoc(p(prof(), '/milestones/mp'), ms('mp')));
+await deny('방 밖 사람은 산출물을 읽을 수 없다', getDoc(p(stranger(), '/deliverables/d1')));
+await deny('마일스톤 제목이 비면 거절', setDoc(p(ben(), '/milestones/e1'), ms('e1', { title: '' })));
+await deny('마일스톤 제목이 없으면 거절', setDoc(p(ben(), '/milestones/e2'), (({ title, ...r }) => r)(ms('e2'))));
+await deny('마일스톤 제목이 너무 길면 거절', setDoc(p(ben(), '/milestones/e3'), ms('e3', { title: 'x'.repeat(501) })));
+await deny('모르는 마일스톤 상태 거절', setDoc(p(ben(), '/milestones/e4'), ms('e4', { status: 'hacked' })));
+await deny('모르는 마일스톤 종류 거절', setDoc(p(ben(), '/milestones/e5'), ms('e5', { kind: 'x' })));
+await deny('마일스톤에 허용하지 않은 칸 거절', setDoc(p(ben(), '/milestones/e6'), ms('e6', { blob: 'x'.repeat(100000) })));
+await deny('마일스톤 기한이 문자열이면 거절', setDoc(p(ben(), '/milestones/e7'), ms('e7', { dueAt: 'soon' })));
+await deny('마일스톤 단계 이름이 너무 길면 거절', setDoc(p(ben(), '/milestones/e8'), ms('e8', { phase: 'x'.repeat(61) })));
+await deny('산출물 제목이 비면 거절', setDoc(p(ben(), '/deliverables/f1'), dl('f1', { title: '' })));
+await deny('모르는 산출물 종류 거절', setDoc(p(ben(), '/deliverables/f2'), dl('f2', { docType: 'virus' })));
+await deny('모르는 산출물 상태 거절', setDoc(p(ben(), '/deliverables/f3'), dl('f3', { status: 'x' })));
+await deny('산출물 주소 javascript: 거절', setDoc(p(ben(), '/deliverables/f4'), dl('f4', { url: 'javascript:alert(1)' })));
+await deny('산출물 주소 data: 거절', setDoc(p(ben(), '/deliverables/f5'), dl('f5', { url: 'data:text/html,x' })));
+await deny('산출물 주소가 너무 길면 거절', setDoc(p(ben(), '/deliverables/f6'), dl('f6', { url: `https://a.example/${'x'.repeat(2000)}` })));
+await deny('산출물에 허용하지 않은 칸 거절', setDoc(p(ben(), '/deliverables/f7'), dl('f7', { blob: 'x' })));
+await deny('산출물 담당자 id가 이상하면 거절', setDoc(p(ben(), '/deliverables/f8'), dl('f8', { ownerId: '../x y' })));
+await allow('팀원은 마일스톤을 지운다', deleteDoc(p(ben(), '/milestones/m1')));
+await deny('교수자는 산출물을 지울 수 없다', deleteDoc(p(prof(), '/deliverables/d1')));
+
 // ---------- 기록 쓰기 ----------
 await allow('내 기록 쓰기', setDoc(p(ben(), '/items/mine'), record('mine', 'mB', 'uBen', 'me')));
 await deny('이상한 공유 범위 거절', setDoc(p(ben(), '/items/bad1'), record('bad1', 'mB', 'uBen', 'everyone')));

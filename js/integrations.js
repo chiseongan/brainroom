@@ -1,6 +1,7 @@
 // 외부 도구 연동: GitHub · Figma · Notion (RQ-2, RQ-3, ONRQ-1, ONRQ-3)
 // - 각자 본인 토큰으로 연결하고 '본인 작업만' 가져온다. (보안 규칙상 남의 이름으로는 기록을 만들 수 없다)
-// - 세 서비스 모두 브라우저에서 공식 API를 바로 부를 수 있다(CORS 허용). 서버 없음.
+// - 세 서비스 모두 브라우저에서 공식 API를 바로 부를 수 있다(CORS 허용). 프록시(worker/)가 있으면 그쪽을 거쳐 한도·레이트리밋을 한곳에서 다룬다.
+// - 카카오톡 단톡방은 API가 없어 내보낸 파일로 가져온다 (js/kakao.js). Google Meet 녹취는 js/meetimport.js.
 // - 토큰은 이 브라우저(localStorage)에만 저장하고 팀·Firestore에는 올리지 않는다.
 // - 무엇을 볼지(저장소·파일·페이지)는 방 공용 설정 state.links, 누구로 볼지(토큰·계정)는 각자 설정.
 // 가져온 기록은 종류 'work'(🛠️ 작업 기록), id는 원본 기준이라 다시 가져와도 중복되지 않는다.
@@ -12,7 +13,9 @@ const SOURCES = {
   github: { icon: '🐙', name: 'GitHub', decor: 'laptop' },
   figma: { icon: '🎨', name: 'Figma', decor: 'art' },
   notion: { icon: '📝', name: 'Notion', decor: 'papers' },
+  gdocs: { icon: '📄', name: 'Google 문서', decor: 'books' },
 };
+const GDOCS_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'; // 문서 수정 기록·댓글·본문 읽기 (쓰기 없음)
 
 // 연동 정보는 계정별로 따로 둔다: 같은 브라우저에 다른 사람이 로그인해도 앞사람의 토큰을 쓸 수 없다. 샘플 체험은 보지 않는다.
 function integKey() {
@@ -60,6 +63,13 @@ function parseFigmaKey(text) {
   return m ? m[1] : /^[A-Za-z0-9]{15,}$/.test((text || '').trim()) ? text.trim() : '';
 }
 
+// Docs·Sheets·Slides·Drive 링크 → 파일 id
+function parseGdocId(text) {
+  const t = String(text || '').trim();
+  const m = t.match(/docs\.google\.com\/(?:document|spreadsheets|presentation|forms)\/d\/([\w-]{10,})/) || t.match(/drive\.google\.com\/file\/d\/([\w-]{10,})/) || t.match(/drive\.google\.com\/open\?id=([\w-]{10,})/);
+  return m ? m[1] : /^[\w-]{20,}$/.test(t) ? t : '';
+}
+
 function parseNotionId(text) {
   const hex = (text || '').replace(/-/g, '').match(/[0-9a-f]{32}(?=[^0-9a-f]*$|\?|#)/i)?.[0] || (text || '').replace(/-/g, '').match(/[0-9a-f]{32}/i)?.[0];
   return hex ? `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`.toLowerCase() : '';
@@ -75,24 +85,52 @@ class ApiError extends Error {
   }
 }
 
+// 실모드에서 프록시가 이 소스를 중계할 수 있는지 (PROXY_URL + 로그인 + /v1/config.proxy[source])
+async function proxyCovers(source) {
+  if (guestMode || typeof proxyReady !== 'function' || !proxyReady()) return false;
+  const cfg = typeof proxyConfig === 'function' ? await proxyConfig() : null;
+  return Boolean(cfg && cfg.proxy && cfg.proxy[source]);
+}
+
+// 원 API URL을 Worker 프록시 경로로 바꿔 호출한다. 그 서비스의 토큰은 X-BR-Token으로만 보내고(무상태),
+// Worker가 그 서비스 형식(Bearer·X-Figma-Token·Notion-Version)으로 바꿔 전달한다. Worker 인증은 Firebase ID 토큰.
+// 조회용 POST(Notion 검색·데이터베이스 조회)는 JSON 본문을 그대로 넘긴다.
+const API_BASES = { github: 'https://api.github.com/', figma: 'https://api.figma.com/', notion: 'https://api.notion.com/' };
+async function apiGetViaProxy(source, url, token, init = {}) {
+  const base = API_BASES[source];
+  const path = url.startsWith(base) ? url.slice(base.length) : url.replace(/^https?:\/\/[^/]+\//, '');
+  const idToken = await firebase.auth().currentUser.getIdToken();
+  return fetch(`${PROXY_URL}/v1/proxy/${source}/${path}`, {
+    method: init.method || 'GET',
+    body: init.body,
+    headers: { Authorization: `Bearer ${idToken}`, 'X-BR-Token': token || '', ...(init.body ? { 'Content-Type': 'application/json' } : {}) },
+  });
+}
+
 async function apiGet(source, url, token, init = {}) {
   const headers = {
     github: { Accept: 'application/vnd.github+json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     figma: String(token).startsWith('Bearer ') ? { Authorization: token } : { 'X-Figma-Token': token }, // OAuth 토큰은 'Bearer …'로 보관
     notion: { Authorization: `Bearer ${token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' },
+    gdocs: { Authorization: `Bearer ${token}` },
   }[source];
-  // 샘플 체험에서는 밖으로 나가지 않고 가상 응답을 쓴다 (js/sampleapi.js)
-  const res = guestMode && typeof sampleFetch === 'function' ? await sampleFetch(url) : await fetch(url, { ...init, headers });
+  // 샘플 체험에서는 밖으로 나가지 않고 가상 응답을 쓴다 (js/sampleapi.js).
+  // 실모드에서 프록시가 이 소스를 중계하면 레이트리밋·사용량 한도를 위해 프록시를 타고,
+  // 없으면 직접 호출한다 (세 서비스 모두 CORS가 열려 있어 프록시 없이도 동작).
+  const res = guestMode && typeof sampleFetch === 'function' ? await sampleFetch(url, init)
+    : await proxyCovers(source) ? await apiGetViaProxy(source, url, token, init)
+    : await fetch(url, { ...init, headers });
   if (!res.ok) {
     let detail = '';
     try { detail = (await res.json()).message || ''; } catch (e) { /* 무시 */ }
     throw new ApiError(source, res.status, detail);
   }
-  return res.json();
+  return init.as === 'text' ? res.text() : res.json();
 }
 
 const gh = (path, token) => apiGet('github', `https://api.github.com${path}`, token);
 const fg = (path, token) => apiGet('figma', `https://api.figma.com/v1${path}`, token);
+const gd = (path, token, init) => apiGet('gdocs', `https://www.googleapis.com/drive/v3${path}`, token, init);
 const nt = (path, token, body) => apiGet('notion', `https://api.notion.com/v1${path}`, token, body ? { method: 'POST', body: JSON.stringify(body) } : {});
 
 // ---------- 기록 만들기 ----------
@@ -159,6 +197,9 @@ function upsertWork({ core, coreN = 6, ...item }) {
   return true;
 }
 
+// 하루 단위로 묶는 기록의 id에는 '누구'도 넣는다: 같은 날 같은 파일에 두 사람이 댓글을 달면 팀 DB에서 id가 겹치기 때문
+const whoKey = who => String(who || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12) || 'me';
+
 const AI_TRAILER = /co-authored-by:[^\n]*(claude|copilot|chatgpt|openai|gemini|anthropic|cursor|codex)|generated with \[?(claude|copilot|chatgpt|cursor|codex)/i;
 
 async function syncGithub(conf, repo, since) {
@@ -182,6 +223,35 @@ async function syncGithub(conf, repo, since) {
       id: `ghpr_${repo.replace('/', '_')}_${p.number}`, type: 'work', title: `PR #${p.number} ${p.title}`.slice(0, 80), core: `${p.title}\n${p.body || ''}`,
       content: `풀 리퀘스트 · ${repo} · ${p.merged_at ? '병합됨' : p.state === 'open' ? '열림' : '닫힘'}`,
       url: p.html_url, createdAt: Date.parse(p.created_at), work: { source: 'github', kind: 'pr', repo },
+    })) n++;
+  }
+  // 이슈: 내가 연 것 (이슈 목록에는 PR도 섞여 오므로 PR은 위에서만 센다)
+  const issues = await gh(`/repos/${repo}/issues?creator=${encodeURIComponent(conf.login)}&state=all&since=${new Date(since).toISOString()}&per_page=50`, conf.token);
+  for (const i of issues) {
+    if (i.pull_request || Date.parse(i.created_at) < since) continue;
+    if (upsertWork({
+      id: `ghis_${repo.replace('/', '_')}_${i.number}`, type: 'work', title: `이슈 #${i.number} ${i.title}`.slice(0, 80), core: `${i.title}\n${i.body || ''}`,
+      content: `이슈 · ${repo} · ${i.state === 'open' ? '열림' : '닫힘'}${i.comments ? ` · 댓글 ${i.comments}개` : ''}\n${(i.body || '').trim().slice(0, 300)}`.trim(),
+      url: i.html_url, createdAt: Date.parse(i.created_at), work: { source: 'github', kind: 'issue', repo },
+    })) n++;
+  }
+  // 이슈 댓글: 저장소 전체 댓글 중 내 것만, 하루 단위로 묶는다 (코드 리뷰·논의 참여 기록)
+  const comments = await gh(`/repos/${repo}/issues/comments?since=${new Date(since).toISOString()}&per_page=100`, conf.token);
+  const byDay = new Map();
+  for (const c of comments) {
+    if (c.user?.login?.toLowerCase() !== conf.login.toLowerCase() || Date.parse(c.created_at) < since) continue;
+    const d = dayKey(Date.parse(c.created_at));
+    const g = byDay.get(d) || { at: 0, msgs: [], url: c.html_url, issues: new Set() };
+    g.at = Math.max(g.at, Date.parse(c.created_at));
+    g.msgs.push(c.body || '');
+    g.issues.add((c.issue_url || '').split('/').pop());
+    byDay.set(d, g);
+  }
+  for (const [d, g] of byDay) {
+    if (upsertWork({
+      id: `ghic_${repo.replace('/', '_')}_${whoKey(conf.login)}_${d}`, type: 'work', title: `이슈 댓글 ${g.msgs.length}개 · ${repo.split('/')[1]}`.slice(0, 80), core: g.msgs.join('\n'),
+      content: `GitHub 이슈 댓글 · #${[...g.issues].filter(Boolean).join(', #')}\n${g.msgs.map(m => `- ${m.replace(/\s+/g, ' ').trim().slice(0, 160)}`).join('\n').slice(0, 500)}`,
+      url: g.url, createdAt: g.at, work: { source: 'github', kind: 'issue_comment', repo, count: g.msgs.length },
     })) n++;
   }
   return n;
@@ -224,7 +294,7 @@ async function syncFigma(conf, keys, since) {
     });
     for (const [d, g] of cByDay) {
       if (upsertWork({
-        id: `fgc_${key}_${d}`, type: 'work', title: `${file.name} 댓글 ${g.msgs.length}개`.slice(0, 80), core: `${file.name}\n${g.msgs.join('\n')}`,
+        id: `fgc_${key}_${whoKey(conf.userId)}_${d}`, type: 'work', title: `${file.name} 댓글 ${g.msgs.length}개`.slice(0, 80), core: `${file.name}\n${g.msgs.join('\n')}`,
         content: `Figma 댓글\n${g.msgs.map(m => `- ${m}`).join('\n').slice(0, 500)}`,
         url, createdAt: g.at, work: { source: 'figma', kind: 'comment', file: key },
       })) n++;
@@ -285,19 +355,111 @@ function notionTitle(page) {
   return prop?.title?.map(t => t.plain_text).join('') || '제목 없음';
 }
 
+const notionId = id => String(id || '').replace(/-/g, '').toLowerCase();
+
+// 통합에 공유된 페이지를 마지막 수정 시각 순으로 찾는다 (하위 페이지도 다 나온다). since보다 오래된 것이 나오면 멈춘다
+async function notionSearch(token, since, maxPages = 3) {
+  const out = [];
+  let cursor;
+  for (let i = 0; i < maxPages; i++) {
+    const res = await nt('/search', token, {
+      filter: { property: 'object', value: 'page' }, sort: { direction: 'descending', timestamp: 'last_edited_time' }, page_size: 100,
+      ...(cursor ? { start_cursor: cursor } : {}),
+    });
+    let stale = false;
+    for (const p of res.results || []) {
+      if (Date.parse(p.last_edited_time) < since) { stale = true; break; }
+      out.push(p);
+    }
+    if (stale || !res.has_more || !res.next_cursor) break;
+    cursor = res.next_cursor;
+  }
+  return out;
+}
+
+// 페이지 본문 글자 (문단·제목·목록·할 일·인용 등의 글) → 키워드용. 수정 시각이 같으면 이 브라우저의 캐시를 쓴다
+const NOTION_TEXT_KEY = 'brainroom:notion-text';
+function notionBlockText(block) {
+  const body = block?.[block.type];
+  const rich = body?.rich_text || body?.title || [];
+  return Array.isArray(rich) ? rich.map(r => r.plain_text).join('') : '';
+}
+
+async function notionPageText(page, token) {
+  let cache = {};
+  try { cache = JSON.parse(localStorage.getItem(NOTION_TEXT_KEY)) || {}; } catch (e) { /* 무시 */ }
+  const key = notionId(page.id);
+  if (cache[key]?.edited === page.last_edited_time) return cache[key].text;
+  let text = '';
+  try {
+    const res = await nt(`/blocks/${page.id}/children?page_size=100`, token);
+    text = (res.results || []).map(notionBlockText).filter(Boolean).join('\n').slice(0, 3000);
+  } catch (e) {
+    console.warn('Notion 본문을 읽지 못했어요', e);
+    return '';
+  }
+  cache[key] = { edited: page.last_edited_time, text, at: Date.now() };
+  const keep = Object.entries(cache).sort((a, b) => b[1].at - a[1].at).slice(0, 60);
+  if (!guestMode) try { localStorage.setItem(NOTION_TEXT_KEY, JSON.stringify(Object.fromEntries(keep))); } catch (e) { /* 무시 */ }
+  return text;
+}
+
+// 방에 연결한 페이지·DB 아래에 있는지: 부모를 따라 올라간다 (한 번 본 조상은 기억, 조회는 sync마다 40번까지)
+function notionAncestry(token, linked) {
+  const known = new Map(); // id → 연결한 것 아래인가
+  let lookups = 0;
+  const parentOf = par => {
+    const t = par?.type;
+    const id = par?.page_id || par?.database_id || par?.block_id || par?.data_source_id;
+    return t && t !== 'workspace' && id ? { type: t, id } : null;
+  };
+  const fetchParent = async ({ type, id }) => {
+    if (lookups >= 40) return null;
+    lookups++;
+    const path = type === 'page_id' ? `/pages/${id}` : type === 'database_id' || type === 'data_source_id' ? `/databases/${id}` : `/blocks/${id}`;
+    return nt(path, token).catch(() => null);
+  };
+  const under = async (obj, depth = 0) => {
+    if (!obj) return false;
+    const id = notionId(obj.id);
+    if (linked.has(id)) return true;
+    if (known.has(id)) return known.get(id);
+    let result = false;
+    const par = parentOf(obj.parent);
+    if (par && depth < 8) {
+      const pid = notionId(par.id);
+      if (linked.has(pid)) result = true;
+      else if (known.has(pid)) result = known.get(pid);
+      else result = await under(await fetchParent(par), depth + 1);
+    }
+    known.set(id, result);
+    return result;
+  };
+  return under;
+}
+
 async function syncNotion(conf, ids, since) {
   if (!conf.userId) return 0;
   let n = 0;
+  const linked = new Set((ids || []).map(notionId));
+  const seen = new Set();
+  const mine = []; // 내가 마지막으로 고친 페이지들
   const notePage = async page => {
+    const key = notionId(page.id);
+    if (seen.has(key)) return;
+    seen.add(key);
     const t = Date.parse(page.last_edited_time);
     if (page.last_edited_by?.id !== conf.userId || t < since) return;
+    mine.push(page);
+    const text = mine.length <= 25 ? await notionPageText(page, conf.token) : '';
     if (upsertWork({
-      id: `nt_${page.id.replace(/-/g, '')}_${dayKey(t)}`, type: 'work', title: `${notionTitle(page)} 수정`.slice(0, 80), core: notionTitle(page),
-      content: 'Notion · 페이지 수정 (그날 마지막으로 고친 사람이 나일 때 기록돼요)', url: page.url, createdAt: t,
+      id: `nt_${key}_${dayKey(t)}`, type: 'work', title: `${notionTitle(page)} 수정`.slice(0, 80), core: `${notionTitle(page)}\n${notionTitle(page)}\n${text}`, coreN: 8,
+      content: `Notion · 페이지 수정 (그날 마지막으로 고친 사람이 나일 때 기록돼요)${text ? `\n${text.replace(/\s+/g, ' ').slice(0, 200)}` : ''}`, url: page.url, createdAt: t,
       work: { source: 'notion', kind: 'edit', page: page.id },
     })) n++;
   };
-  for (const id of ids) {
+  // 1) 방에 연결한 페이지·DB 자체
+  for (const id of ids || []) {
     let page = null;
     try {
       page = await nt(`/pages/${id}`, conf.token);
@@ -313,10 +475,27 @@ async function syncNotion(conf, ids, since) {
       });
       for (const p of res.results || []) await notePage(p);
     }
+  }
+  // 2) 통합에 공유된 모든 페이지 중 최근 고친 것 (하위 페이지·손자 페이지까지). 연결한 것이 있으면 그 아래 것만
+  let found = [];
+  try {
+    found = await notionSearch(conf.token, since);
+  } catch (e) {
+    console.warn('Notion 검색을 쓰지 못했어요 (연결한 페이지만 봅니다)', e);
+  }
+  const under = notionAncestry(conf.token, linked);
+  for (const p of found) {
+    if (p.last_edited_by?.id !== conf.userId) continue; // 남의 수정은 부모를 찾아볼 필요도 없다
+    if (linked.size && !(await under(p))) continue;
+    await notePage(p);
+  }
+  // 3) 댓글: 연결한 페이지 + 내가 고친 페이지(최근 10개)
+  const commentTargets = [...new Set([...(ids || []), ...mine.slice(0, 10).map(p => p.id)])];
+  for (const id of commentTargets) {
     const comments = await nt(`/comments?block_id=${id}`, conf.token).catch(() => ({ results: [] }));
-    const mine = (comments.results || []).filter(c => c.created_by?.id === conf.userId && Date.parse(c.created_time) >= since);
+    const my = (comments.results || []).filter(c => c.created_by?.id === conf.userId && Date.parse(c.created_time) >= since);
     const byDay = new Map();
-    mine.forEach(c => {
+    my.forEach(c => {
       const d = dayKey(Date.parse(c.created_time));
       const g = byDay.get(d) || { at: 0, msgs: [] };
       g.at = Math.max(g.at, Date.parse(c.created_time));
@@ -325,13 +504,93 @@ async function syncNotion(conf, ids, since) {
     });
     for (const [d, g] of byDay) {
       if (upsertWork({
-        id: `ntc_${id.replace(/-/g, '')}_${d}`, type: 'work', title: `Notion 댓글 ${g.msgs.length}개`, core: g.msgs.join('\n'),
+        id: `ntc_${notionId(id)}_${whoKey(conf.userId)}_${d}`, type: 'work', title: `Notion 댓글 ${g.msgs.length}개`, core: g.msgs.join('\n'),
         content: `Notion 댓글\n${g.msgs.map(m => `- ${m}`).join('\n').slice(0, 500)}`,
-        url: `https://www.notion.so/${id.replace(/-/g, '')}`, createdAt: g.at, work: { source: 'notion', kind: 'comment', page: id },
+        url: `https://www.notion.so/${notionId(id)}`, createdAt: g.at, work: { source: 'notion', kind: 'comment', page: id },
       })) n++;
     }
   }
   return n;
+}
+
+// ---------- Google 문서 (Docs·Sheets·Slides): 내가 고친 날(수정 기록)·내 댓글 ----------
+// Drive API의 수정 기록(revisions)에는 '누가 고쳤는지'가 붙어 있고, lastModifyingUser.me 가 나인지 알려 준다.
+const GDOCS_TEXT_KEY = 'brainroom:gdocs-text';
+const GDOCS_EXPORT = { 'application/vnd.google-apps.document': 'text/plain', 'application/vnd.google-apps.presentation': 'text/plain', 'application/vnd.google-apps.spreadsheet': 'text/csv' };
+const isMeGoogle = (u, conf) => Boolean(u && (u.me === true || (conf.email && u.emailAddress && u.emailAddress.toLowerCase() === conf.email.toLowerCase())));
+
+async function gdocText(file, token) {
+  const mime = GDOCS_EXPORT[file.mimeType];
+  if (!mime) return '';
+  let cache = {};
+  try { cache = JSON.parse(localStorage.getItem(GDOCS_TEXT_KEY)) || {}; } catch (e) { /* 무시 */ }
+  if (cache[file.id]?.modified === file.modifiedTime) return cache[file.id].text;
+  let text = '';
+  try {
+    text = String(await gd(`/files/${file.id}/export?mimeType=${encodeURIComponent(mime)}`, token, { as: 'text' })).slice(0, 4000);
+  } catch (e) {
+    console.warn('Google 문서 본문을 읽지 못했어요', e);
+    return '';
+  }
+  cache[file.id] = { modified: file.modifiedTime, text, at: Date.now() };
+  const keep = Object.entries(cache).sort((a, b) => b[1].at - a[1].at).slice(0, 40);
+  if (!guestMode) try { localStorage.setItem(GDOCS_TEXT_KEY, JSON.stringify(Object.fromEntries(keep))); } catch (e) { /* 무시 */ }
+  return text;
+}
+
+async function syncGdocs(conf, ids, since) {
+  if (!conf?.token) return 0;
+  let n = 0;
+  for (const id of ids || []) {
+    const file = await gd(`/files/${encodeURIComponent(id)}?fields=id,name,mimeType,modifiedTime,webViewLink`, conf.token);
+    const url = file.webViewLink || `https://drive.google.com/open?id=${id}`;
+    const rev = await gd(`/files/${encodeURIComponent(id)}/revisions?pageSize=200&fields=revisions(id,modifiedTime,lastModifyingUser(displayName,emailAddress,me))`, conf.token).catch(e => { console.warn(e); return { revisions: [] }; });
+    const byDay = new Map();
+    for (const r of rev.revisions || []) {
+      const t = Date.parse(r.modifiedTime);
+      if (t < since || !isMeGoogle(r.lastModifyingUser, conf)) continue;
+      const d = dayKey(t);
+      const g = byDay.get(d) || { at: 0, count: 0 };
+      g.count++;
+      g.at = Math.max(g.at, t);
+      byDay.set(d, g);
+    }
+    const text = byDay.size ? await gdocText(file, conf.token) : '';
+    const kindName = { 'application/vnd.google-apps.spreadsheet': 'Google 시트', 'application/vnd.google-apps.presentation': 'Google 슬라이드' }[file.mimeType] || 'Google 문서';
+    for (const [d, g] of byDay) {
+      if (upsertWork({
+        id: `gd_${id.slice(0, 24)}_${d}`, type: 'work', title: `${file.name} 편집`.slice(0, 80), core: `${file.name}\n${file.name}\n${text}`, coreN: 8,
+        content: `${kindName} · 수정 ${g.count}번${text ? `\n${text.replace(/\s+/g, ' ').slice(0, 200)}` : ''}`, url, createdAt: g.at,
+        work: { source: 'gdocs', kind: 'edit', file: id, count: g.count },
+      })) n++;
+    }
+    const com = await gd(`/files/${encodeURIComponent(id)}/comments?pageSize=100&fields=comments(id,createdTime,content,author(displayName,emailAddress,me))`, conf.token).catch(() => ({ comments: [] }));
+    const cByDay = new Map();
+    for (const c of com.comments || []) {
+      const t = Date.parse(c.createdTime);
+      if (t < since || !isMeGoogle(c.author, conf)) continue;
+      const d = dayKey(t);
+      const g = cByDay.get(d) || { at: 0, msgs: [] };
+      g.at = Math.max(g.at, t);
+      g.msgs.push(c.content || '');
+      cByDay.set(d, g);
+    }
+    for (const [d, g] of cByDay) {
+      if (upsertWork({
+        id: `gdc_${id.slice(0, 24)}_${whoKey(conf.email)}_${d}`, type: 'work', title: `${file.name} 댓글 ${g.msgs.length}개`.slice(0, 80), core: `${file.name}\n${g.msgs.join('\n')}`,
+        content: `${kindName} 댓글\n${g.msgs.map(m => `- ${m.replace(/\s+/g, ' ').trim().slice(0, 160)}`).join('\n').slice(0, 500)}`, url, createdAt: g.at,
+        work: { source: 'gdocs', kind: 'comment', file: id },
+      })) n++;
+    }
+  }
+  return n;
+}
+
+// Google 문서는 토큰을 저장하지 않고 쓸 때마다 Google에서 받는다 (자동 가져오기에서는 기억해 둔 토큰이 있을 때만)
+async function gdocsConf(interactive) {
+  if (typeof googleToken !== 'function' || !AUTH_ENABLED || !authUser) return null;
+  const token = await googleToken(GDOCS_SCOPE, { interactive });
+  return token ? { token, email: authUser.email } : null;
 }
 
 // ---------- 가져오기 ----------
@@ -369,7 +628,8 @@ async function syncAllWork(manual) {
   };
   if (links.github && conf.github?.login) jobs.push(['github', async () => syncGithub(await opened('github'), links.github, since)]);
   if (links.figma?.length && conf.figma?.token) jobs.push(['figma', async () => syncFigma(await opened('figma'), links.figma, since)]);
-  if (links.notion?.length && conf.notion?.token) jobs.push(['notion', async () => syncNotion(await opened('notion'), links.notion, since)]);
+  if (conf.notion?.token && conf.notion?.userId) jobs.push(['notion', async () => syncNotion(await opened('notion'), links.notion || [], since)]); // 페이지를 안 정했으면 통합에 공유된 전부
+  if (links.gdocs?.length && conf.gdocs) jobs.push(['gdocs', async () => { const c = await gdocsConf(manual); return c ? syncGdocs(c, links.gdocs, since) : 0; }]);
   if (!jobs.length) { if (manual) toast('연결된 도구가 없어요. 방 설정과 내 연결을 확인해 주세요'); return; }
   workRunning = true;
   const results = [];
@@ -420,6 +680,35 @@ function canEditLinks() {
   return !cloudOn() || cloud.owner;
 }
 
+// 카드마다 '계정으로 연결(원클릭)' 버튼. 프록시에 그 서비스의 OAuth 앱이 설정돼 있을 때만 켜진다
+function oauthButtonHTML(key) {
+  const s = SOURCES[key];
+  if (!PROXY_URL) return `<p class="muted sm">원클릭 연결(계정으로 연결)은 프록시를 배포하고 ${s.name} OAuth 앱을 등록하면 켜져요 → <code>docs/backend.md</code></p>`;
+  if (!aiCardCfg) return '';
+  if (!aiCardCfg.features?.oauth?.[key]) return `<p class="muted sm">프록시에 ${s.name} OAuth 앱(client id·secret)이 아직 없어요 → <code>docs/backend.md</code></p>`;
+  if (!proxyReady()) return '<p class="muted sm">계정으로 연결은 Google 로그인 후 온라인 방에서 쓸 수 있어요.</p>';
+  return `<div class="modal-actions" style="justify-content:flex-start"><button type="button" class="btn primary sm" data-ig="oauth:${key}">${s.icon} ${s.name} 계정으로 연결 (원클릭)</button><span class="muted sm">토큰 붙여넣기 대신 ${s.name} 승인 화면에서 허용만 누르면 돼요</span></div>`;
+}
+
+function gdocsCardHTML(conf, links, my) {
+  const list = (links.gdocs || []).map((v, i) => `<li><code>${esc(v)}</code> <button class="btn icon" data-ig="unlink:gdocs:${i}" title="빼기">✕</button></li>`).join('') || '<li class="muted sm">아직 없어요</li>';
+  const can = AUTH_ENABLED && authUser && !guestMode;
+  return `
+      <article class="card integ">
+        <header><h2>📄 Google 문서</h2>${connectionBadge(my.gdocs)}</header>
+        <p class="muted sm">Docs·Sheets·Slides 문서에서 <b>내가 고친 날</b>(수정 기록)과 내 댓글, 본문 키워드를 가져와요. 문서 링크만 붙여넣으면 돼요. 토큰은 저장하지 않고 Google에서 그때그때 받아요(읽기만).</p>
+        <h3>방 공용 · 문서</h3>
+        <ul class="integ-list">${list}</ul>
+        <form class="inline-form" data-ig-form="gdocs-doc"><input name="v" placeholder="Google Docs·Sheets·Slides 링크 붙여넣기"><button class="btn">추가</button></form>
+        <h3>내 연결</h3>
+        ${guestMode ? '<p class="muted sm">샘플 체험에서는 가상 문서로 보여 줘요.</p>'
+    : can ? `<div class="modal-actions" style="justify-content:flex-start">${conf.gdocs ? `<span class="sm">연결된 계정: <b>${esc(conf.gdocs.email || authUser.email)}</b></span><button type="button" class="btn ghost sm" data-ig="disconnect:gdocs">연결 해제</button>` : '<button type="button" class="btn primary sm" data-ig="gdocs-connect">📄 Google 계정으로 연결 (읽기 권한 허용)</button>'}</div>`
+      : '<p class="notice sm">Google 로그인한 온라인 방에서 쓸 수 있어요. (배포한 BrainRoom 주소에서 로그인하세요)</p>'}
+        <details class="sm"><summary>어떻게 가져오나요</summary>
+          <p>"연결"을 누르면 Google이 <b>드라이브 읽기 권한</b>을 물어요(쓰기 없음). 문서의 <b>수정 기록</b>에서 내가 고친 날짜와 횟수, 내 댓글만 가져오고 다른 팀원 것은 각자 가져와요. 공유 문서는 내가 볼 수 있는 문서만 읽혀요.</p></details>
+      </article>`;
+}
+
 function renderIntegrations() {
   const conf = loadInteg();
   const links = state.links || {};
@@ -433,7 +722,8 @@ function renderIntegrations() {
   <section>
     <div class="page-head">
       <div>
-        <h1>🔌 연동</h1>
+        <p class="eyebrow">CONNECT · 연결하고</p>
+        <h1>연동</h1>
         <p class="muted">각자 <b>본인 토큰</b>으로 연결하고, <b>본인 작업만</b> 가져와요. 토큰은 이 브라우저에만 <b>암호화해서</b> 저장되고 팀 데이터에 올라가지 않아요. (계정으로 연결할 때와 갱신할 때만 프록시를 거쳐요) 최근 ${SYNC_DAYS}일 작업을 15분마다 가져와요.</p>
       </div>
       <div class="filters">
@@ -446,9 +736,10 @@ function renderIntegrations() {
     ${guestMode ? `<p class="notice">🎲 <b>샘플 체험 중이에요.</b> 아래 연결 상태와 방의 작업 기록은 GitHub·Figma·Notion API 응답 형식으로 만든 <b>가상 데이터</b>이고, 실제 서비스로 요청을 보내지 않아요. <b>지금 가져오기</b>를 누르면 새 커밋이 생긴 것처럼 보여 줘요. 실제로 연결하려면 로그인하세요.</p>` : ''}
     <div class="integ-grid">
       ${aiProxyCardHTML()}
+      ${typeof kakaoCardHTML === 'function' ? kakaoCardHTML() : ''}
       <article class="card integ">
         <header><h2>🐙 GitHub</h2>${connectionBadge(my.github)}</header>
-        <p class="muted sm">내 커밋과 풀 리퀘스트를 가져와요. 커밋에 AI 공동 작성 표시(Co-Authored-By: Claude 등)가 있으면 🤖로 알려줘요.</p>
+        <p class="muted sm">내 커밋·풀 리퀘스트·이슈·이슈 댓글을 가져와요. 커밋에 AI 공동 작성 표시(Co-Authored-By: Claude 등)가 있으면 🤖로 알려줘요.</p>
         <h3>방 공용 · 저장소</h3>
         <form class="inline-form" data-ig-form="github-repo"><input name="v" placeholder="github.com/팀/저장소 또는 팀/저장소" value="${esc(links.github || '')}"><button class="btn">저장</button></form>
         <h3>내 연결</h3>
@@ -457,6 +748,7 @@ function renderIntegrations() {
           <input name="token" type="password" autocomplete="off" placeholder="토큰 (비공개 저장소일 때만, 읽기 전용)" value="${conf.github?.token ? '••••••••' : ''}">
           <div class="modal-actions">${conf.github ? '<button type="button" class="btn ghost sm" data-ig="disconnect:github">연결 해제</button>' : ''}<button class="btn primary">연결</button></div>
         </form>
+        ${oauthButtonHTML('github')}
         <details class="sm"><summary>토큰 만드는 법</summary>
           <p>계정으로 연결은 공개 저장소만 읽어요 (쓰기 권한을 달라고 하지 않아요). 공개 저장소는 토큰 없이 아이디만 넣으면 돼요. 비공개 저장소는 <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">GitHub → Fine-grained token</a>에서 그 저장소만 고르고, 권한은 <b>Contents · Pull requests · Metadata 읽기</b>만 주세요.</p></details>
       </article>
@@ -473,14 +765,15 @@ function renderIntegrations() {
           ${conf.figma?.handle ? `<p class="sm">연결된 계정: <b>${esc(conf.figma.handle)}</b></p>` : ''}
           <div class="modal-actions">${conf.figma ? '<button type="button" class="btn ghost sm" data-ig="disconnect:figma">연결 해제</button>' : ''}<button class="btn primary">연결</button></div>
         </form>
+        ${oauthButtonHTML('figma')}
         <details class="sm"><summary>토큰 만드는 법</summary>
           <p>Figma → 왼쪽 위 계정 메뉴 → <b>Settings → Security → Personal access tokens</b>에서 만들어요. 권한은 <b>current_user, file_content, file_versions, file_comments 읽기</b>만 주세요.</p></details>
       </article>
 
       <article class="card integ">
         <header><h2>📝 Notion</h2>${connectionBadge(my.notion)}</header>
-        <p class="muted sm">지정한 페이지·데이터베이스에서 <b>내가 마지막으로 고친 날</b>과 내 댓글을 가져와요. (Notion API는 수정한 사람을 '마지막 수정자'만 알려줘요)</p>
-        <h3>방 공용 · 페이지</h3>
+        <p class="muted sm">통합에 공유된 페이지(하위 페이지까지 전부)에서 <b>내가 마지막으로 고친 날</b>과 본문 키워드, 내 댓글을 가져와요. 아래에 페이지를 넣으면 그 아래 것만 봐요. (Notion API는 수정한 사람을 '마지막 수정자'만 알려줘요)</p>
+        <h3>방 공용 · 페이지 <span class="muted">(비우면 통합에 공유된 전부)</span></h3>
         <ul class="integ-list">${list('notion', links.notion, v => v)}</ul>
         <form class="inline-form" data-ig-form="notion-page"><input name="v" placeholder="Notion 페이지·DB 링크 붙여넣기"><button class="btn">추가</button></form>
         <h3>내 연결</h3>
@@ -490,10 +783,12 @@ function renderIntegrations() {
             <select name="user">${conf.notion.users.map(u => `<option value="${u.id}" ${u.id === conf.notion.userId ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></label>` : ''}
           <div class="modal-actions">${conf.notion ? '<button type="button" class="btn ghost sm" data-ig="disconnect:notion">연결 해제</button>' : ''}<button class="btn primary">${conf.notion?.users ? '저장' : '연결'}</button></div>
         </form>
-        <details class="sm"><summary>연결하는 법</summary>
+        ${oauthButtonHTML('notion')}
+        <details class="sm"><summary>직접 연결하는 법 (시크릿 붙여넣기)</summary>
           <p>1) <a href="https://www.notion.so/profile/integrations" target="_blank" rel="noopener noreferrer">Notion 통합</a>에서 <b>새 내부 통합</b>을 만들고, 기능은 <b>콘텐츠 읽기 · 댓글 읽기 · 사용자 정보 읽기</b>만 켜요.<br>
           2) 팀 페이지에서 오른쪽 위 <b>••• → 연결 → 방금 만든 통합</b>을 추가해요.<br>3) 시크릿을 붙여넣고 연결한 뒤 '나는 누구'를 골라요.</p></details>
       </article>
+      ${gdocsCardHTML(conf, links, my)}
     </div>
 
     <div class="card">
@@ -517,7 +812,7 @@ document.addEventListener('submit', async e => {
   // 새로 입력한 토큰이면 그것을, 아니면 저장돼 있던(암호화된) 토큰을 풀어서 쓴다
   const typedToken = async (old, typed) => (typed && !/^•+$/.test(typed) ? typed.trim() : openToken(old));
   state.links ||= {};
-  if (['github-repo', 'figma-file', 'notion-page'].includes(kind) && !canEditLinks()) return toast('연동 대상은 방을 만든 사람(팀장)만 정할 수 있어요');
+  if (['github-repo', 'figma-file', 'notion-page', 'gdocs-doc'].includes(kind) && !canEditLinks()) return toast('연동 대상은 방을 만든 사람(팀장)만 정할 수 있어요');
   try {
     if (kind === 'github-repo') {
       const repo = parseRepo(v);
@@ -525,10 +820,10 @@ document.addEventListener('submit', async e => {
       state.links.github = repo;
       saveState();
       toast(repo ? `🐙 저장소 ${repo} 를 방에 연결했어요` : '저장소 연결을 뺐어요');
-    } else if (kind === 'figma-file' || kind === 'notion-page') {
-      const key = kind === 'figma-file' ? 'figma' : 'notion';
-      const id = key === 'figma' ? parseFigmaKey(v) : parseNotionId(v);
-      if (!id) return toast(key === 'figma' ? 'Figma 파일 링크를 확인해 주세요' : 'Notion 페이지 링크를 확인해 주세요');
+    } else if (kind === 'figma-file' || kind === 'notion-page' || kind === 'gdocs-doc') {
+      const key = { 'figma-file': 'figma', 'notion-page': 'notion', 'gdocs-doc': 'gdocs' }[kind];
+      const id = key === 'figma' ? parseFigmaKey(v) : key === 'notion' ? parseNotionId(v) : parseGdocId(v);
+      if (!id) return toast({ figma: 'Figma 파일 링크를 확인해 주세요', notion: 'Notion 페이지 링크를 확인해 주세요', gdocs: 'Google 문서 링크를 확인해 주세요' }[key]);
       state.links[key] = [...new Set([...(state.links[key] || []), id])];
       saveState();
       toast('방에 추가했어요');
@@ -575,6 +870,18 @@ document.addEventListener('click', e => {
   if (!btn) return;
   const [act, a, b] = btn.dataset.ig.split(':');
   if (act === 'sync') return syncAllWork(true);
+  if (act === 'gdocs-connect') {
+    gdocsConf(true).then(c => {
+      if (!c) return toast('Google 로그인 후 쓸 수 있어요');
+      saveInteg({ ...loadInteg(), gdocs: { email: c.email, at: Date.now() } });
+      setMyConnection('gdocs', 'ok');
+      saveState();
+      toast(`📄 ${c.email} 로 연결했어요`);
+      render();
+      if (state.links?.gdocs?.length) syncAllWork(true);
+    }).catch(e => { console.error(e); toast('Google 권한을 받지 못했어요. 팝업을 허용하고 다시 눌러 주세요'); });
+    return;
+  }
   if (act === 'unlink') {
     if (!canEditLinks()) return toast('연동 대상은 방을 만든 사람(팀장)만 정할 수 있어요');
     state.links[a] = (state.links[a] || []).filter((_, i) => i !== +b);

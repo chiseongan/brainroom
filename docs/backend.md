@@ -84,6 +84,16 @@ npx wrangler deploy                         # 나온 주소를 js/ai-config.js�
 
 OAuth를 쓰려면 각 서비스의 앱 설정에 돌아올 주소(`https://chiseongan.github.io/brainroom/`)를 등록하고, `wrangler.toml`에 공개 client id를 넣습니다. Figma 승인 코드는 30초 뒤 만료되므로, 승인 후 돌아왔을 때 로그인이 풀려 있으면 다시 연결해야 합니다.
 
+### 원클릭 연결(계정으로 연결) 켜기 — Notion 예시 (15분)
+연동 화면의 각 카드에 "○○ 계정으로 연결 (원클릭)" 버튼이 있습니다. 프록시에 그 서비스의 OAuth 앱이 등록돼 있을 때만 켜지고, 아니면 안내 문구가 보입니다.
+
+1. **Notion 공개 통합 만들기**: https://www.notion.so/profile/integrations → 새 통합 → 유형 **공개(Public)**. 기능은 **콘텐츠 읽기 · 댓글 읽기 · 사용자 정보 읽기**만. Redirect URI에 BrainRoom 주소(`https://chiseongan.github.io/brainroom/`, 로컬 시험이면 `http://localhost:5173/`)를 넣고 저장 → **OAuth client ID**와 **client secret**을 받습니다.
+2. **프록시에 넣기**: `worker/wrangler.toml`의 `NOTION_CLIENT_ID = "…"`에 client id(공개 값), 비밀 값은 `cd worker && npx wrangler secret put NOTION_CLIENT_SECRET`.
+3. **배포**: `npx wrangler deploy` → 나온 주소를 `js/ai-config.js`의 `PROXY_URL`에 넣고 앱을 배포합니다.
+4. 이제 연동 화면 Notion 카드의 **"Notion 계정으로 연결 (원클릭)"**을 누르면 Notion 승인 화면에서 **공유할 페이지를 고르기만** 하면 됩니다. 페이지를 따로 등록하지 않아도 승인한 페이지(하위 페이지 포함) 전부에서 내 수정·댓글을 가져옵니다.
+
+Figma·GitHub도 같은 방식입니다: Figma는 https://www.figma.com/developers/apps 에서 앱을 만들고 `FIGMA_CLIENT_ID`/`FIGMA_CLIENT_SECRET`, GitHub는 Settings → Developer settings → OAuth Apps에서 만들고 `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`.
+
 **Chrome 확장**: 앱과 별개로 zip으로 전달합니다. `extension/manifest.json`의 버전을 올리고 `python tools/build_extension_zip.py`로 만드세요. 개발용 localhost 권한은 빠집니다.
 
 **주간 요약**은 저장하지 않고 보는 사람의 브라우저에서 계산합니다 (`weeklySummary`, `js/trace.js`). 규칙과 쓰기 횟수에 영향이 없고, 교수자는 걸러진 데이터로 계산하므로 권한이 그대로 지켜집니다. 규칙 기반이며 AI를 쓰지 않습니다.

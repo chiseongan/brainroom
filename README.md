@@ -53,6 +53,8 @@ Google 로그인 설정을 마친 뒤 이어서 하면, 팀원끼리 실시간�
 
 `drive.file`은 사용자가 Picker에서 **고른 파일만** 읽는 권한입니다.
 
+**Google 문서 연동**(🔌 연동 → Google 문서: 수정 기록·댓글·본문 키워드)을 쓰려면 같은 동의 화면에 `https://www.googleapis.com/auth/drive.readonly`(읽기 전용)도 추가하세요. 링크로 넣은 문서를 각자 자기 권한으로 읽으므로, 토큰은 저장하지 않고 가져올 때마다 Google에서 받습니다.
+
 ## 프록시 서버 (선택): AI 정리 · Figma 그림 인식 · 계정으로 연결 · 회의 중계 (`worker/`)
 브라우저에 둘 수 없는 비밀 값(Anthropic API 키, OAuth client secret, TURN 키)을 대신 쥐는 작은 서버입니다. **없어도 앱은 규칙 기반으로 그대로 동작**하고, 배포하면 아래가 켜집니다.
 
