@@ -1,6 +1,7 @@
 // 카카오톡 대화 내보내기 가져오기
 // - 팀플 단톡방을 '대화 내보내기'(PC) / '대화 내용 내보내기 → 텍스트만'(모바일)로 받은 .txt(.csv)를 읽는다.
-//   카카오톡에는 공개 API가 없어 파일로만 가져올 수 있다. 파일은 이 브라우저에서만 읽고 올리지 않는다.
+//   카카오톡에는 공개 API가 없어 파일로만 가져올 수 있다. 파일 자체는 올리지 않고 이 브라우저에서 읽는다.
+//   팀원과 짝지은 화자의 말만 방에 저장한다(팀원이 아닌 사람의 말은 저장하지 않는다). 팀원별 '내가 한 말'은 나만 보기로 만든다.
 // - 형식은 기기마다 다르다 → 전부 너그럽게 읽는다:
 //     PC(Windows/Mac)  "--------------- 2026년 11월 3일 월요일 ---------------" + "[이름] [오후 3:21] 말"
 //     Android          "2026년 11월 3일 오후 3:21, 이름 : 말"
@@ -144,7 +145,7 @@ function kakaoLocalImport({ title, lines, at = Date.now() }) {
     const transcript = mine.map(l => l.text).join('\n');
     const item = analyze({
       id, memberId: m.id, type: 'talk', title: `「${c.title}」에서 내가 한 말`, content: kakaoSummary(mine, c, keywords),
-      url: '', createdAt: lastAt, visibility: 'team', table: null, votes: [],
+      url: '', createdAt: lastAt, visibility: 'me', table: null, votes: [],
       talk: { callId, lineCount: mine.length, keywords, transcript: transcript.length > 6000 ? `${transcript.slice(0, 6000)}\n…(이하 생략)` : transcript },
     });
     item.keywords = keywords.slice(0, 6);
@@ -204,12 +205,12 @@ function openKakaoImport(text, fileName) {
         const sample = mine.find(m => !isKakaoNoise(m.text))?.text || mine[0]?.text || '';
         return `<label class="sm"><span><b>${esc(sp)}</b> <span class="muted">${mine.length}개 · ${esc(trunc(maskPII(sample.replace(/\s+/g, ' ')), 40))}</span></span>
           <select name="sp${i}" data-speaker="${esc(sp)}">
-            <option value="">팀원 아님 (대화는 남기되 누구 방에도 담지 않음)</option>
+            <option value="">팀원 아님 (이 사람의 말은 저장하지 않음)</option>
             ${state.members.map(m => `<option value="${m.id}" ${m.id === guess ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}
           </select></label>`;
       }).join('')}</div>
       <label class="check sm"><input type="checkbox" name="noise" checked> ㅋㅋ·ㅇㅇ 같은 짧은 반응, 사진·이모티콘은 빼기</label>
-      <p class="notice sm">이메일·전화번호·주민등록번호 형태는 가린 뒤 저장해요. 대화 원문은 이 방 팀원만 볼 수 있어요. 파일은 올리지 않고 이 브라우저에서만 읽어요.</p>
+      <p class="notice sm">짝지은 팀원의 말만 이 방에 저장해요. 팀원이 아닌 사람의 말은 저장하지 않아요. 이메일·전화번호·주민등록번호 형태는 가린 뒤 저장해요. 저장한 대화 원문은 이 방 팀원이 볼 수 있고, 팀원별 '내가 한 말' 기록은 나만 보기로 만들어져요. 대화방 사람들에게 알리지 않은 대화라면 가져오기 전에 동의를 구하세요. 파일 자체는 올리지 않고 이 브라우저에서 읽어요.</p>
       <div class="modal-actions"><button type="button" class="btn ghost" data-close>취소</button><button class="btn primary">가져오기</button></div>
     </form>`);
 }
@@ -222,6 +223,7 @@ function kakaoDraftLines(form) {
   const until = data.get('until') ? Date.parse(data.get('until')) + 864e5 - 1 : Infinity;
   const title = (data.get('title') || kakaoDraft.title).trim().slice(0, 40) || '단톡방';
   const lines = kakaoLines(kakaoDraft.messages, { since, until, map, dropNoise: data.get('noise') === 'on' })
+    .filter(l => l.memberId) // 팀원이 아닌 사람의 말은 저장하지 않는다
     .map(l => ({ ...l, text: maskPII(l.text) }));
   return { title, lines };
 }
@@ -286,7 +288,7 @@ function kakaoCardHTML() {
   return `
     <article class="card integ">
       <header><h2>💬 카카오톡 단톡방</h2>${(state.calls || []).some(c => c.source === 'kakao') || state.items.some(i => i.talk?.callId?.startsWith('kakao_')) ? '<span class="vis-badge vis-prof">✅ 가져옴</span>' : '<span class="vis-badge vis-me">파일로 가져오기</span>'}</header>
-      <p class="muted sm">팀플 단톡방의 대화를 가져와요. 참여자를 팀원과 짝지으면 각자 방에 '내가 한 말'이 생기고, 대화 요약과 "~하기로 했다" 같은 정한 것 후보가 기록돼요. 카카오톡은 API가 없어 <b>내보낸 파일</b>로만 가져올 수 있어요.</p>
+      <p class="muted sm">팀플 단톡방의 대화를 가져와요. 참여자를 팀원과 짝지으면 각자 방에 '내가 한 말'(나만 보기)이 생기고, 대화 요약과 "~하기로 했다" 같은 정한 것 후보가 기록돼요. 카카오톡은 API가 없어 <b>내보낸 파일</b>로만 가져올 수 있어요.</p>
       <div class="modal-actions" style="justify-content:flex-start">
         <label class="btn file-btn">대화 파일 올리기 (.txt · .csv)<input type="file" id="kakaoFile" accept=".txt,.csv,text/plain,text/csv" hidden></label>
         ${guestMode ? '<button type="button" class="btn" data-kakao="sample">샘플 단톡방으로 체험</button>' : ''}
